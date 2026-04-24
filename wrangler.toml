@@ -1,0 +1,11 @@
+name = "celestrak-orbit-lab-pro"
+main = "worker/index.ts"
+compatibility_date = "2025-04-01"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[vars]
+CACHE_TTL_SECONDS = "900"
