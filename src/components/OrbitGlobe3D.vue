@@ -27,6 +27,8 @@ const TRACK_COLORS = ['#53b1ff', '#1eaedb', '#0070cc', '#ffffff', '#d53b00', '#1
 const EARTH_RADIUS = 1.5;
 const DEFAULT_CAMERA_DISTANCE = 5.45;
 const INITIAL_EARTH_ROTATION = { x: -0.2, y: -0.52, z: 0.02 };
+const FOCUS_TARGET_Y_RATIO = 0.08;
+const ROTATION_X_LIMIT = Math.PI / 2 + Math.atan(FOCUS_TARGET_Y_RATIO) + 0.04;
 type GeoPoint = [number, number];
 type GeoPolygon = GeoPoint[];
 interface PointerSnapshot {
@@ -51,6 +53,7 @@ let frameHandle = 0;
 let timer: number | null = null;
 let currentCameraDistance = DEFAULT_CAMERA_DISTANCE;
 let targetCameraDistance = DEFAULT_CAMERA_DISTANCE;
+let globeRotation = { ...INITIAL_EARTH_ROTATION };
 let pointerStart: { x: number; y: number; rotationX: number; rotationY: number } | null = null;
 let pointerDownSnapshot: PointerSnapshot | null = null;
 let pinchState: GlobePinchState | null = null;
@@ -94,7 +97,8 @@ function buildScene() {
   scene.add(createStarField(props.dataSaver ? 220 : 620));
 
   earthRig = new THREE.Group();
-  earthRig.rotation.set(INITIAL_EARTH_ROTATION.x, INITIAL_EARTH_ROTATION.y, INITIAL_EARTH_ROTATION.z);
+  globeRotation = { ...INITIAL_EARTH_ROTATION };
+  applyGlobeRotation();
   scene.add(earthRig);
 
   globeLayer = new THREE.Group();
@@ -1001,8 +1005,8 @@ function beginRotation(clientX: number, clientY: number) {
   pointerStart = {
     x: clientX,
     y: clientY,
-    rotationX: earthRig.rotation.x,
-    rotationY: earthRig.rotation.y,
+    rotationX: globeRotation.x,
+    rotationY: globeRotation.y,
   };
   isInteracting.value = true;
 }
@@ -1021,8 +1025,10 @@ function handlePointerMove(event: PointerEvent) {
   if (!pointerStart || !earthRig) return;
   const deltaX = (event.clientX - pointerStart.x) / 180;
   const deltaY = (event.clientY - pointerStart.y) / 180;
-  earthRig.rotation.y = pointerStart.rotationY + deltaX;
-  earthRig.rotation.x = THREE.MathUtils.clamp(pointerStart.rotationX + deltaY, -1.18, 1.18);
+  setGlobeRotation({
+    x: pointerStart.rotationX + deltaY,
+    y: pointerStart.rotationY + deltaX,
+  });
 }
 
 function handlePointerUp(event: PointerEvent) {
@@ -1059,8 +1065,7 @@ function toggleAutoRotate() {
 }
 
 function resetGlobeRotation() {
-  if (!earthRig) return;
-  earthRig.rotation.set(INITIAL_EARTH_ROTATION.x, INITIAL_EARTH_ROTATION.y, INITIAL_EARTH_ROTATION.z);
+  setGlobeRotation({ ...INITIAL_EARTH_ROTATION });
   autoRotate.value = false;
   isInteracting.value = false;
   pointerStart = null;
@@ -1111,13 +1116,38 @@ function focusGlobeOnTarget(target: MapFocusTarget | null | undefined) {
   const targetVector = target.type === 'satellite' ? findSatelliteVector(target.id) : findStationVector(target.id);
   if (!targetVector) return;
 
-  const from = targetVector.clone().normalize();
-  const to = new THREE.Vector3(0, 0.08, 1).normalize();
-  earthRig.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(from, to));
+  setGlobeRotation(rotationForFocusTarget(targetVector));
   autoRotate.value = false;
   isInteracting.value = false;
   pointerStart = null;
   targetCameraDistance = Math.min(targetCameraDistance, 4.85);
+}
+
+function rotationForFocusTarget(targetVector: THREE.Vector3) {
+  const z = INITIAL_EARTH_ROTATION.z;
+  const zRotated = targetVector.clone().normalize().applyEuler(new THREE.Euler(0, 0, z, 'XYZ'));
+  const rawY = Math.atan2(-zRotated.x, zRotated.z);
+  const y = nearestEquivalentAngle(rawY, globeRotation.y);
+  const afterY = zRotated.clone().applyEuler(new THREE.Euler(0, y, 0, 'XYZ'));
+  const x = Math.atan2(afterY.y, afterY.z) - Math.atan(FOCUS_TARGET_Y_RATIO);
+  return { x, y, z };
+}
+
+function nearestEquivalentAngle(angle: number, anchor: number) {
+  return angle + Math.round((anchor - angle) / (Math.PI * 2)) * Math.PI * 2;
+}
+
+function setGlobeRotation(next: Partial<typeof INITIAL_EARTH_ROTATION>) {
+  globeRotation = {
+    x: next.x === undefined ? globeRotation.x : THREE.MathUtils.clamp(next.x, -ROTATION_X_LIMIT, ROTATION_X_LIMIT),
+    y: next.y ?? globeRotation.y,
+    z: next.z ?? globeRotation.z,
+  };
+  applyGlobeRotation();
+}
+
+function applyGlobeRotation() {
+  earthRig?.rotation.set(globeRotation.x, globeRotation.y, globeRotation.z);
 }
 
 function findSatelliteVector(id: string) {
@@ -1149,7 +1179,7 @@ function animate() {
   frameHandle = requestAnimationFrame(animate);
 
   if (earthRig && autoRotate.value && !isInteracting.value) {
-    earthRig.rotation.y += props.dataSaver ? 0.00055 : 0.0009;
+    setGlobeRotation({ y: globeRotation.y + (props.dataSaver ? 0.00055 : 0.0009) });
   }
 
   const clouds = globeLayer?.getObjectByName('cloudLayer');
