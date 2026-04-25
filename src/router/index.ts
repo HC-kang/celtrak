@@ -23,6 +23,11 @@ export const router = createRouter({
       component: () => import('@/views/FleetsView.vue'),
     },
     {
+      path: '/stations',
+      name: 'stations',
+      component: () => import('@/views/GroundStationsView.vue'),
+    },
+    {
       path: '/weather',
       name: 'weather',
       component: () => import('@/views/SpaceWeatherView.vue'),

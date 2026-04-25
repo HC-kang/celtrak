@@ -16,12 +16,14 @@ import type {
   UserFleet,
   UserPreferences,
 } from '@/domain/types';
-import { createGateway } from '@/services/gateway';
+import { createGateway, type ConjunctionQuery } from '@/services/gateway';
 import { createFleetStore } from '@/services/store/createFleetStore';
+import { defaultGroundStations } from '@/services/defaultGroundStations';
 import { loadPreferences, savePreferences } from '@/lib/prefs';
 import { nowIso } from '@/lib/time';
 import { parseImportedText } from '@/services/tleParser';
 import { getPreferredRenderMode } from '@/lib/device';
+import { createUserElevationMaskSource } from '@/lib/groundStationElevation';
 
 const gateway = createGateway();
 const fleetStore = createFleetStore();
@@ -138,11 +140,33 @@ export const useAppStore = defineStore('app', () => {
       anomalies.value = await fleetStore.listAnomalies({});
       events.value = await fleetStore.listEvents(nowIso(), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString());
 
-      const defaults = await gateway.getGroundStations();
+      const defaults = enrichDefaultGroundStationSources(await gateway.getGroundStations());
       const existingStationIds = new Set(groundStations.value.map((station) => station.id));
       const missingDefaults = defaults.filter((station) => !existingStationIds.has(station.id));
       if (missingDefaults.length) {
         for (const station of missingDefaults) {
+          await fleetStore.upsertGroundStation(station);
+        }
+        groundStations.value = await fleetStore.listGroundStations();
+      }
+      const defaultsById = new Map(defaults.map((station) => [station.id, station]));
+      const stationsNeedingMaskSource = groundStations.value
+        .map((station) => {
+          const defaultStation = defaultsById.get(station.id);
+          if (station.elevationMaskSource?.confidence === 'user') return null;
+          if (!defaultStation?.elevationMaskSource) {
+            return station.elevationMaskSource ? null : { ...station, elevationMaskSource: createUserElevationMaskSource() };
+          }
+          const elevationMaskSource =
+            station.elevationMaskDeg === defaultStation.elevationMaskDeg
+              ? defaultStation.elevationMaskSource
+              : createUserElevationMaskSource();
+          if (sameElevationMaskSource(station.elevationMaskSource, elevationMaskSource)) return null;
+          return { ...station, elevationMaskSource };
+        })
+        .filter((station): station is GroundStation => Boolean(station));
+      if (stationsNeedingMaskSource.length) {
+        for (const station of stationsNeedingMaskSource) {
           await fleetStore.upsertGroundStation(station);
         }
         groundStations.value = await fleetStore.listGroundStations();
@@ -161,7 +185,10 @@ export const useAppStore = defineStore('app', () => {
         events.value = await fleetStore.listEvents(nowIso(), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString());
       }
 
-      selectedFleetId.value = selectedFleet.value?.id ?? null;
+      selectedFleetId.value = preferredFleetId(fleets.value, preferences.value.selectedFleetId);
+      if (selectedFleetId.value && preferences.value.selectedFleetId !== selectedFleetId.value) {
+        updatePreferences({ selectedFleetId: selectedFleetId.value });
+      }
       loadingMessage.value = '선택 플릿 궤도 데이터를 불러오는 중';
       await hydrateSelectedFleetCatalog();
       const [weatherData, conjunctionData, decayData, alertsData] = await remoteSignals;
@@ -212,6 +239,10 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function fetchConjunctions(query?: ConjunctionQuery) {
+    return gateway.getConjunctions(query);
+  }
+
   function mergeCatalogEntries(entries: CatalogEntry[]) {
     if (!entries.length) return;
     const byCatalogNumber = new Map(catalog.value.map((entry) => [entry.satcat.catalogNumber, entry]));
@@ -255,18 +286,21 @@ export const useAppStore = defineStore('app', () => {
     await fleetStore.upsertFleet(fleet);
     fleets.value = await fleetStore.listFleets();
     selectedFleetId.value = fleet.id;
+    updatePreferences({ selectedFleetId: fleet.id });
   }
 
   async function deleteFleet(id: string) {
     await fleetStore.deleteFleet(id);
     fleets.value = await fleetStore.listFleets();
-    selectedFleetId.value = fleets.value[0]?.id ?? null;
+    selectedFleetId.value = preferredFleetId(fleets.value, selectedFleetId.value === id ? undefined : selectedFleetId.value);
+    updatePreferences({ selectedFleetId: selectedFleetId.value ?? undefined });
     await hydrateSelectedFleetCatalog();
     await hydrateOpsStatuses();
   }
 
   async function selectFleet(id: string) {
     selectedFleetId.value = id;
+    updatePreferences({ selectedFleetId: id });
     await hydrateSelectedFleetCatalog();
     await hydrateOpsStatuses();
   }
@@ -501,6 +535,7 @@ export const useAppStore = defineStore('app', () => {
     deleteFleet,
     events,
     exportWorkspace,
+    fetchConjunctions,
     filteredConjunctions,
     filteredDecayPredictions,
     fleetHealth,
@@ -575,6 +610,37 @@ function matchesRef(left: FleetMemberRef, right: FleetMemberRef) {
   if (left.refType !== right.refType) return false;
   if (left.refType === 'catalog') return left.catalogNumber === right.catalogNumber;
   return left.customTleId === right.customTleId;
+}
+
+function preferredFleetId(fleets: UserFleet[], candidate?: string | null) {
+  if (candidate && fleets.some((fleet) => fleet.id === candidate)) return candidate;
+  return fleets[0]?.id ?? null;
+}
+
+function enrichDefaultGroundStationSources(stations: GroundStation[]) {
+  const localDefaults = new Map(defaultGroundStations.map((station) => [station.id, station]));
+  const remoteIds = new Set(stations.map((station) => station.id));
+  return [
+    ...stations.map((station) => {
+      const localDefault = localDefaults.get(station.id);
+      return {
+        ...(localDefault ?? {}),
+        ...station,
+        elevationMaskSource: station.elevationMaskSource ?? localDefault?.elevationMaskSource,
+      };
+    }),
+    ...defaultGroundStations.filter((station) => !remoteIds.has(station.id)),
+  ];
+}
+
+function sameElevationMaskSource(left: GroundStation['elevationMaskSource'], right: GroundStation['elevationMaskSource']) {
+  if (!left || !right) return left === right;
+  return (
+    left.confidence === right.confidence &&
+    left.label === right.label &&
+    left.url === right.url &&
+    left.note === right.note
+  );
 }
 
 function createSeedEvents(): ScheduledEvent[] {

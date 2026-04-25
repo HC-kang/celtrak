@@ -134,14 +134,26 @@ export interface GroundStation {
   lonDeg: number;
   altitudeM: number;
   elevationMaskDeg: number;
+  elevationMaskSource?: GroundStationElevationMaskSource;
   enabled: boolean;
   schemaVersion: 1;
+}
+
+export type ElevationMaskSourceConfidence = 'verified' | 'inferred' | 'default' | 'user';
+
+export interface GroundStationElevationMaskSource {
+  confidence: ElevationMaskSourceConfidence;
+  label: string;
+  url?: string;
+  note?: string;
+  updatedAt?: string;
 }
 
 export interface UserPreferences {
   theme: 'light' | 'dark' | 'system';
   language: 'ko' | 'en';
   defaultGroundStationId?: string;
+  selectedFleetId?: string;
   units: { distance: 'km' | 'mi'; speed: 'km/s' | 'km/h' };
   mobileRenderMode: '2d' | '3d';
   tabletRenderMode: '2d' | '3d';
@@ -200,11 +212,34 @@ export interface PassPrediction extends TimestampedOrigin {
   aos: string;
   tca: string;
   los: string;
+  losIsPredictionHorizon?: boolean;
   maxElevationDeg: number;
   aosAzimuthDeg: number;
   losAzimuthDeg: number;
   illuminationAtTca: 'SUNLIT' | 'ECLIPSED' | 'PENUMBRA';
   computedAt: string;
+}
+
+export type MapFocusTarget =
+  | { type: 'satellite'; id: string }
+  | { type: 'groundStation'; id: string };
+
+export type LiveContactStatus = 'IN_CONTACT' | 'BEFORE_AOS' | 'AFTER_LOS';
+
+export interface LiveContactLink {
+  satelliteRef: FleetMemberRef;
+  satelliteId: string;
+  satelliteName: string;
+  groundStationId: string;
+  groundStationName: string;
+  elevationDeg: number;
+  azimuthDeg: number;
+  status: LiveContactStatus;
+  aos?: string;
+  tca?: string;
+  los?: string;
+  countdownSeconds?: number;
+  countdownIsLowerBound?: boolean;
 }
 
 export interface ImportReport {
