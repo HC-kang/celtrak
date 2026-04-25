@@ -142,6 +142,7 @@ export interface UserPreferences {
   theme: 'light' | 'dark' | 'system';
   language: 'ko' | 'en';
   defaultGroundStationId?: string;
+  selectedFleetId?: string;
   units: { distance: 'km' | 'mi'; speed: 'km/s' | 'km/h' };
   mobileRenderMode: '2d' | '3d';
   tabletRenderMode: '2d' | '3d';

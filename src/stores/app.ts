@@ -161,7 +161,10 @@ export const useAppStore = defineStore('app', () => {
         events.value = await fleetStore.listEvents(nowIso(), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString());
       }
 
-      selectedFleetId.value = selectedFleet.value?.id ?? null;
+      selectedFleetId.value = preferredFleetId(fleets.value, preferences.value.selectedFleetId);
+      if (selectedFleetId.value && preferences.value.selectedFleetId !== selectedFleetId.value) {
+        updatePreferences({ selectedFleetId: selectedFleetId.value });
+      }
       loadingMessage.value = '선택 플릿 궤도 데이터를 불러오는 중';
       await hydrateSelectedFleetCatalog();
       const [weatherData, conjunctionData, decayData, alertsData] = await remoteSignals;
@@ -255,18 +258,21 @@ export const useAppStore = defineStore('app', () => {
     await fleetStore.upsertFleet(fleet);
     fleets.value = await fleetStore.listFleets();
     selectedFleetId.value = fleet.id;
+    updatePreferences({ selectedFleetId: fleet.id });
   }
 
   async function deleteFleet(id: string) {
     await fleetStore.deleteFleet(id);
     fleets.value = await fleetStore.listFleets();
-    selectedFleetId.value = fleets.value[0]?.id ?? null;
+    selectedFleetId.value = preferredFleetId(fleets.value, selectedFleetId.value === id ? undefined : selectedFleetId.value);
+    updatePreferences({ selectedFleetId: selectedFleetId.value ?? undefined });
     await hydrateSelectedFleetCatalog();
     await hydrateOpsStatuses();
   }
 
   async function selectFleet(id: string) {
     selectedFleetId.value = id;
+    updatePreferences({ selectedFleetId: id });
     await hydrateSelectedFleetCatalog();
     await hydrateOpsStatuses();
   }
@@ -575,6 +581,11 @@ function matchesRef(left: FleetMemberRef, right: FleetMemberRef) {
   if (left.refType !== right.refType) return false;
   if (left.refType === 'catalog') return left.catalogNumber === right.catalogNumber;
   return left.customTleId === right.customTleId;
+}
+
+function preferredFleetId(fleets: UserFleet[], candidate?: string | null) {
+  if (candidate && fleets.some((fleet) => fleet.id === candidate)) return candidate;
+  return fleets[0]?.id ?? null;
 }
 
 function createSeedEvents(): ScheduledEvent[] {
