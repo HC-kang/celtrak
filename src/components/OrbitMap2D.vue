@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import * as satellite from 'satellite.js';
 import type { CatalogEntry, GroundStation, LiveContactLink, MapFocusTarget } from '@/domain/types';
 import { createNightMaskPath } from '@/lib/solarTerminator';
@@ -58,6 +58,7 @@ onMounted(() => {
   if (mapShell.value) {
     resizeObserver.observe(mapShell.value);
   }
+  requestAnimationFrame(() => centerMapOnTarget(props.focusedTarget));
 });
 
 onUnmounted(() => {
@@ -90,6 +91,19 @@ const currentView = computed(() => {
     width,
     height,
   };
+});
+const visibleWorlds = computed(() => {
+  const view = currentView.value;
+  const start = Math.floor(view.x / MAP_WIDTH) - 1;
+  const end = Math.floor((view.x + view.width) / MAP_WIDTH) + 1;
+  const worlds: WorldCopy[] = [];
+  for (let index = start; index <= end; index += 1) {
+    worlds.push({ id: index, offset: index * MAP_WIDTH });
+  }
+  return worlds.sort(
+    (left, right) =>
+      Math.abs(left.offset + MAP_WIDTH / 2 - center.value.x) - Math.abs(right.offset + MAP_WIDTH / 2 - center.value.x),
+  );
 });
 const mapViewBox = computed(() => {
   const view = currentView.value;
@@ -160,19 +174,21 @@ const osmTiles = computed(() => {
   const tileZoom = clamp(BASE_TILE_ZOOM + Math.floor(Math.log2(Math.max(zoom.value, 1))), BASE_TILE_ZOOM, MAX_TILE_ZOOM);
   const zoomScale = 2 ** (tileZoom - BASE_TILE_ZOOM);
   const tileSize = TILE_SIZE / zoomScale;
+  const tilesPerAxis = 2 ** tileZoom;
   const maxTileIndex = 2 ** tileZoom - 1;
   const view = currentView.value;
-  const startX = Math.max(0, Math.floor(view.x / tileSize) - 1);
-  const endX = Math.min(maxTileIndex, Math.ceil((view.x + view.width) / tileSize) + 1);
+  const startX = Math.floor(view.x / tileSize) - 1;
+  const endX = Math.ceil((view.x + view.width) / tileSize) + 1;
   const startY = Math.max(0, Math.floor(view.y / tileSize) - 1);
   const endY = Math.min(maxTileIndex, Math.ceil((view.y + view.height) / tileSize) + 1);
   const tiles: OsmTile[] = [];
 
   for (let x = startX; x <= endX; x += 1) {
     for (let y = startY; y <= endY; y += 1) {
+      const wrappedX = positiveModulo(x, tilesPerAxis);
       tiles.push({
         id: `${tileZoom}-${x}-${y}`,
-        href: `https://tile.openstreetmap.org/${tileZoom}/${x}/${y}.png`,
+        href: `https://tile.openstreetmap.org/${tileZoom}/${wrappedX}/${y}.png`,
         x: x * tileSize,
         y: y * tileSize,
         size: tileSize,
@@ -412,10 +428,9 @@ function pointerMidpoint(first: PointerSnapshot, second: PointerSnapshot) {
 }
 
 function clampCenter(x: number, y: number, targetZoom: number) {
-  const width = MAP_WIDTH / targetZoom;
-  const height = width / viewportAspect.value;
+  const height = MAP_WIDTH / targetZoom / viewportAspect.value;
   return {
-    x: clampAxis(x, width, MAP_WIDTH),
+    x,
     y: clampAxis(y, height, MAP_HEIGHT),
   };
 }
@@ -445,9 +460,25 @@ function splitTrail(points: MapPoint[]) {
 }
 
 function formatLongitudeLabel(x: number) {
-  const lon = (x / MAP_WIDTH) * 360 - 180;
+  const lon = (wrapMapX(x) / MAP_WIDTH) * 360 - 180;
   if (Math.abs(lon) < 1) return '0°';
   return `${Math.abs(Math.round(lon))}°${lon > 0 ? 'E' : 'W'}`;
+}
+
+function positiveModulo(value: number, divisor: number) {
+  return ((value % divisor) + divisor) % divisor;
+}
+
+function wrapMapX(x: number) {
+  return positiveModulo(x, MAP_WIDTH);
+}
+
+function nearestWrappedX(baseX: number, anchorX: number) {
+  return baseX + Math.round((anchorX - baseX) / MAP_WIDTH) * MAP_WIDTH;
+}
+
+function withWorldOffset<T extends MapPoint>(point: T, worldOffset: number): T {
+  return { ...point, x: point.x + worldOffset };
 }
 
 function formatSmoothPath(points: MapPoint[]) {
@@ -484,8 +515,9 @@ function formatCoordinate(value: number, axis: 'lat' | 'lon') {
 }
 
 function satelliteLabelBounds(point: MapPoint): MapBounds {
+  const worldLeft = Math.floor(point.x / MAP_WIDTH) * MAP_WIDTH;
   return {
-    x: Math.min(point.x + 18, MAP_WIDTH - 155),
+    x: Math.min(point.x + 18, worldLeft + MAP_WIDTH - 155),
     y: Math.max(point.y - 28, 38),
     width: 138,
     height: 38,
@@ -513,13 +545,19 @@ function focusGroundStation(station: { id: string }) {
 function focusNearestMapTarget(clientX: number, clientY: number) {
   const point = clientToMapPoint(clientX, clientY);
   const hitRadius = Math.max((currentView.value.width / viewportSize.value.width) * 32, 14);
-  const satelliteLabelHit = plotted.value.find((item) => boundsContains(item.labelBounds, point));
+  const satelliteLabelHit = plotted.value.find((item) => {
+    const shiftedPoint = { ...item.point, x: nearestWrappedX(item.point.x, point.x) };
+    return boundsContains(satelliteLabelBounds(shiftedPoint), point);
+  });
   if (satelliteLabelHit) {
     emit('focus-target', { type: 'satellite', id: satelliteLabelHit.id });
     return;
   }
 
-  const stationLabelHit = stationPoints.value.find((station) => boundsContains(stationLabelBounds(station), point));
+  const stationLabelHit = stationPoints.value.find((station) => {
+    const shiftedStation = { ...station, x: nearestWrappedX(station.x, point.x) };
+    return boundsContains(stationLabelBounds(shiftedStation), point);
+  });
   if (stationLabelHit) {
     emit('focus-target', { type: 'groundStation', id: stationLabelHit.id });
     return;
@@ -546,7 +584,7 @@ function focusNearestMapTarget(clientX: number, clientY: number) {
 function nearestByDistance(items: Array<{ target: MapFocusTarget; point: MapPoint }>, point: MapPoint) {
   let nearest: { target: MapFocusTarget; distance: number } | null = null;
   for (const item of items) {
-    const distance = Math.hypot(item.point.x - point.x, item.point.y - point.y);
+    const distance = Math.hypot(nearestWrappedX(item.point.x, point.x) - point.x, item.point.y - point.y);
     if (!nearest || distance < nearest.distance) {
       nearest = { target: item.target, distance };
     }
@@ -564,6 +602,53 @@ function targetMatches(left: MapFocusTarget | null | undefined, right: MapFocusT
 
 function linkLabel(link: LiveContactLink) {
   return `${link.elevationDeg.toFixed(0)}° / ${link.azimuthDeg.toFixed(0)}°`;
+}
+
+function contactEndpoints(segment: ContactSegmentLike, worldOffset: number) {
+  const station = withWorldOffset(segment.station, worldOffset);
+  return {
+    station,
+    satellite: {
+      ...segment.satellite.point,
+      x: nearestWrappedX(segment.satellite.point.x, station.x),
+    },
+  };
+}
+
+function contactPath(segment: ContactSegmentLike, worldOffset: number) {
+  const endpoints = contactEndpoints(segment, worldOffset);
+  return `M ${endpoints.station.x.toFixed(1)} ${endpoints.station.y.toFixed(1)} L ${endpoints.satellite.x.toFixed(1)} ${endpoints.satellite.y.toFixed(1)}`;
+}
+
+function contactLabelPoint(segment: ContactSegmentLike, worldOffset: number) {
+  const endpoints = contactEndpoints(segment, worldOffset);
+  return {
+    x: (endpoints.station.x + endpoints.satellite.x) / 2,
+    y: (endpoints.station.y + endpoints.satellite.y) / 2 - 8,
+  };
+}
+
+function centerMapOnTarget(target: MapFocusTarget | null | undefined) {
+  if (!target) return;
+  const point = target.type === 'satellite' ? findSatellitePoint(target.id) : findGroundStationPoint(target.id);
+  if (!point) return;
+
+  const targetZoom = Math.max(zoom.value, Math.min(MAX_ZOOM, Math.max(coverZoom.value, 1.85)));
+  const targetX = nearestWrappedX(point.x, center.value.x);
+  zoom.value = targetZoom;
+  center.value = clampCenter(targetX, point.y, targetZoom);
+  userMovedMap.value = true;
+}
+
+function findSatellitePoint(id: string) {
+  return plotted.value.find((item) => item.id === id)?.point ?? null;
+}
+
+function findGroundStationPoint(id: string) {
+  const visibleStation = stationPoints.value.find((station) => station.id === id);
+  if (visibleStation) return visibleStation;
+  const station = (props.groundStations ?? []).find((item) => item.id === id);
+  return station ? toMapPoint(station.lonDeg, station.latDeg) : null;
 }
 
 function formatTimestampWithSeconds(date: Date) {
@@ -594,6 +679,18 @@ interface OsmTile {
   size: number;
 }
 
+interface WorldCopy {
+  id: number;
+  offset: number;
+}
+
+interface ContactSegmentLike {
+  station: MapPoint;
+  satellite: {
+    point: MapPoint;
+  };
+}
+
 interface DragState {
   pointerId: number;
   startClientX: number;
@@ -617,6 +714,12 @@ interface PinchState {
   lastDistance: number;
   lastMidpoint: PointerSnapshot;
 }
+
+watch(
+  () => props.focusedTarget,
+  (target) => centerMapOnTarget(target),
+  { deep: true },
+);
 </script>
 
 <template>
@@ -678,7 +781,17 @@ interface PinchState {
         </linearGradient>
       </defs>
 
-      <rect :width="MAP_WIDTH" :height="MAP_HEIGHT" fill="#111111" />
+      <g class="orbit-map__world-backgrounds">
+        <rect
+          v-for="world in visibleWorlds"
+          :key="`world-bg-${world.id}`"
+          :x="world.offset"
+          y="0"
+          :width="MAP_WIDTH"
+          :height="MAP_HEIGHT"
+          fill="#111111"
+        />
+      </g>
       <g class="orbit-map__tiles">
         <image
           v-for="tile in osmTiles"
@@ -692,85 +805,108 @@ interface PinchState {
           preserveAspectRatio="none"
         />
       </g>
-      <rect :width="MAP_WIDTH" :height="MAP_HEIGHT" fill="rgba(0, 0, 0, 0.44)" />
-      <rect :width="MAP_WIDTH" :height="MAP_HEIGHT" fill="url(#orbitScanline)" opacity="0.75" />
 
-      <g class="orbit-map__grid">
-        <g v-for="x in longitudeLines" :key="`lon-${x}`">
-          <path :d="`M ${x} 0 V ${MAP_HEIGHT}`" />
-          <text :x="x + 5" y="18">{{ formatLongitudeLabel(x) }}</text>
+      <g
+        v-for="world in visibleWorlds"
+        :key="`world-overlay-${world.id}`"
+        class="orbit-map__world-copy"
+        :transform="`translate(${world.offset} 0)`"
+      >
+        <rect :width="MAP_WIDTH" :height="MAP_HEIGHT" fill="rgba(0, 0, 0, 0.44)" />
+        <rect :width="MAP_WIDTH" :height="MAP_HEIGHT" fill="url(#orbitScanline)" opacity="0.75" />
+
+        <g class="orbit-map__grid">
+          <g v-for="x in longitudeLines" :key="`lon-${world.id}-${x}`">
+            <path :d="`M ${x} 0 V ${MAP_HEIGHT}`" />
+            <text :x="x + 5" y="18">{{ formatLongitudeLabel(x) }}</text>
+          </g>
+          <path v-for="y in latitudeLines" :key="`lat-${world.id}-${y}`" :d="`M 0 ${y} H ${MAP_WIDTH}`" />
         </g>
-        <path v-for="y in latitudeLines" :key="`lat-${y}`" :d="`M 0 ${y} H ${MAP_WIDTH}`" />
-      </g>
 
-      <path class="orbit-map__night-mask" :d="nightMaskPath" />
+        <path class="orbit-map__night-mask" :d="nightMaskPath" />
+      </g>
 
       <g class="orbit-map__contact-links">
         <g
-          v-for="segment in activeContactSegments"
-          :key="segment.id"
-          class="orbit-map__contact-link"
-          :class="{ 'orbit-map__contact-link--focused': segment.focused }"
+          v-for="world in visibleWorlds"
+          :key="`contact-world-${world.id}`"
         >
-          <path
-            :d="`M ${segment.station.x.toFixed(1)} ${segment.station.y.toFixed(1)} L ${segment.satellite.point.x.toFixed(1)} ${segment.satellite.point.y.toFixed(1)}`"
-          />
-          <text
-            :x="(segment.station.x + segment.satellite.point.x) / 2"
-            :y="(segment.station.y + segment.satellite.point.y) / 2 - 8"
+          <g
+            v-for="segment in activeContactSegments"
+            :key="`${world.id}-${segment.id}`"
+            class="orbit-map__contact-link"
+            :class="{ 'orbit-map__contact-link--focused': segment.focused }"
           >
-            {{ linkLabel(segment.link) }}
-          </text>
+            <path :d="contactPath(segment, world.offset)" />
+            <text
+              :x="contactLabelPoint(segment, world.offset).x"
+              :y="contactLabelPoint(segment, world.offset).y"
+            >
+              {{ linkLabel(segment.link) }}
+            </text>
+          </g>
         </g>
       </g>
 
       <g class="orbit-map__stations">
         <g
-          v-for="station in stationPoints"
-          :key="station.id"
-          class="orbit-map__station"
-          :class="{ 'orbit-map__station--focused': targetMatches(props.focusedTarget, { type: 'groundStation', id: station.id }) }"
-          role="button"
-          tabindex="0"
-          @click.stop="focusGroundStation(station)"
-          @keyup.enter.stop="focusGroundStation(station)"
+          v-for="world in visibleWorlds"
+          :key="`station-world-${world.id}`"
+          :transform="`translate(${world.offset} 0)`"
         >
-          <circle :cx="station.x" :cy="station.y" r="26" class="orbit-map__station-range" />
-          <circle :cx="station.x" :cy="station.y" r="7" />
-          <text
-            :x="station.labelAnchor === 'start' ? station.x + 14 : station.x - 14"
-            :y="station.y - 13"
-            :text-anchor="station.labelAnchor"
+          <g
+            v-for="station in stationPoints"
+            :key="`${world.id}-${station.id}`"
+            class="orbit-map__station"
+            :class="{ 'orbit-map__station--focused': targetMatches(props.focusedTarget, { type: 'groundStation', id: station.id }) }"
+            role="button"
+            tabindex="0"
+            @click.stop="focusGroundStation(station)"
+            @keyup.enter.stop="focusGroundStation(station)"
           >
-            {{ station.name }}
-          </text>
+            <circle :cx="station.x" :cy="station.y" r="26" class="orbit-map__station-range" />
+            <circle :cx="station.x" :cy="station.y" r="7" />
+            <text
+              :x="station.labelAnchor === 'start' ? station.x + 14 : station.x - 14"
+              :y="station.y - 13"
+              :text-anchor="station.labelAnchor"
+            >
+              {{ station.name }}
+            </text>
+          </g>
         </g>
       </g>
 
       <g
-        v-for="item in plotted"
-        :key="item.entry.satcat.catalogNumber"
-        class="orbit-map__track"
-        :class="{ 'orbit-map__track--focused': targetMatches(props.focusedTarget, { type: 'satellite', id: item.id }) }"
-        role="button"
-        tabindex="0"
-        @click.stop="focusSatellite(item)"
-        @keyup.enter.stop="focusSatellite(item)"
+        v-for="world in visibleWorlds"
+        :key="`track-world-${world.id}`"
+        :transform="`translate(${world.offset} 0)`"
       >
-        <path
-          v-for="(segment, segmentIndex) in item.trailSegments"
-          :key="`${item.entry.satcat.catalogNumber}-${segmentIndex}`"
-          :d="formatSmoothPath(segment)"
-          class="orbit-map__trail"
-          :stroke="item.color"
-          marker-end="url(#trackArrow)"
-        />
-        <circle :cx="item.point.x" :cy="item.point.y" r="19" class="orbit-map__satellite-ping" :stroke="item.color" />
-        <circle :cx="item.point.x" :cy="item.point.y" r="6.5" class="orbit-map__satellite-core" :fill="item.color" />
-        <g class="orbit-map__satellite-label" :transform="`translate(${item.labelBounds.x} ${item.labelBounds.y})`">
-          <rect width="138" height="38" rx="12" />
-          <text x="12" y="16">{{ item.label }}</text>
-          <text x="12" y="30">{{ formatCoordinate(item.geo.lat, 'lat') }} · {{ formatCoordinate(item.geo.lon, 'lon') }}</text>
+        <g
+          v-for="item in plotted"
+          :key="`${world.id}-${item.entry.satcat.catalogNumber}`"
+          class="orbit-map__track"
+          :class="{ 'orbit-map__track--focused': targetMatches(props.focusedTarget, { type: 'satellite', id: item.id }) }"
+          role="button"
+          tabindex="0"
+          @click.stop="focusSatellite(item)"
+          @keyup.enter.stop="focusSatellite(item)"
+        >
+          <path
+            v-for="(segment, segmentIndex) in item.trailSegments"
+            :key="`${item.entry.satcat.catalogNumber}-${segmentIndex}`"
+            :d="formatSmoothPath(segment)"
+            class="orbit-map__trail"
+            :stroke="item.color"
+            marker-end="url(#trackArrow)"
+          />
+          <circle :cx="item.point.x" :cy="item.point.y" r="19" class="orbit-map__satellite-ping" :stroke="item.color" />
+          <circle :cx="item.point.x" :cy="item.point.y" r="6.5" class="orbit-map__satellite-core" :fill="item.color" />
+          <g class="orbit-map__satellite-label" :transform="`translate(${item.labelBounds.x} ${item.labelBounds.y})`">
+            <rect width="138" height="38" rx="12" />
+            <text x="12" y="16">{{ item.label }}</text>
+            <text x="12" y="30">{{ formatCoordinate(item.geo.lat, 'lat') }} · {{ formatCoordinate(item.geo.lon, 'lon') }}</text>
+          </g>
         </g>
       </g>
     </svg>

@@ -753,6 +753,14 @@ function refKey(member: FleetMemberRef) {
           </div>
           <div class="inline-actions">
             <small>{{ item.hidden ? 'HIDDEN' : item.source }}</small>
+            <button
+              v-if="item.key.startsWith('catalog:')"
+              class="button button--ghost"
+              type="button"
+              @click="setFocusedTarget({ type: 'satellite', id: item.key })"
+            >
+              보기
+            </button>
             <button class="button button--ghost" type="button" @click="store.toggleFleetMemberHidden(item.ref)">
               {{ item.hidden ? '표시' : '숨기기' }}
             </button>

@@ -1091,6 +1091,34 @@ function focusObjectAt(clientX: number, clientY: number) {
   }
 }
 
+function focusGlobeOnTarget(target: MapFocusTarget | null | undefined) {
+  if (!target || !earthRig) return;
+  const targetVector = target.type === 'satellite' ? findSatelliteVector(target.id) : findStationVector(target.id);
+  if (!targetVector) return;
+
+  const from = targetVector.clone().normalize();
+  const to = new THREE.Vector3(0, 0.08, 1).normalize();
+  earthRig.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(from, to));
+  autoRotate.value = false;
+  isInteracting.value = false;
+  pointerStart = null;
+  targetCameraDistance = Math.min(targetCameraDistance, 4.85);
+}
+
+function findSatelliteVector(id: string) {
+  const catalogNumber = Number(id.replace('catalog:', ''));
+  if (!Number.isFinite(catalogNumber)) return null;
+  const entry = props.satellites.find((item) => item.satcat.catalogNumber === catalogNumber);
+  if (!entry?.tle) return null;
+  const satrec = satellite.twoline2satrec(entry.tle.line1, entry.tle.line2);
+  return getOrbitPoint(satrec, new Date(props.orbitTimeIso))?.position ?? null;
+}
+
+function findStationVector(id: string) {
+  const station = (props.groundStations ?? []).find((item) => item.id === id);
+  return station ? latLonToVector(station.latDeg, station.lonDeg, EARTH_RADIUS + 0.035) : null;
+}
+
 function findFocusTarget(object: THREE.Object3D | null): MapFocusTarget | null {
   let current: THREE.Object3D | null = object;
   while (current) {
@@ -1215,6 +1243,7 @@ function radiansToDegrees(value: number) {
 onMounted(() => {
   buildScene();
   syncTimer();
+  requestAnimationFrame(() => focusGlobeOnTarget(props.focusedTarget));
 });
 
 watch(
@@ -1253,10 +1282,11 @@ watch(
 
 watch(
   () => props.focusedTarget,
-  () => {
+  (target) => {
     updateSatellites();
     updateGroundStations();
     updateContactLinks();
+    focusGlobeOnTarget(target);
   },
   { deep: true },
 );

@@ -126,4 +126,52 @@ describe('OrbitMap2D', () => {
 
     expect(wrapper.emitted('focus-target')?.[0]).toEqual([{ type: 'satellite', id: 'catalog:25544' }]);
   });
+
+  it('centers focused ground stations and keeps horizontal panning unbounded', async () => {
+    const wrapper = mount(OrbitMap2D, {
+      props: {
+        satellites: [satelliteEntry],
+        groundStations: [station],
+        contactLinks: [],
+        orbitMode: 'live',
+        orbitTimeIso: '2026-04-25T00:00:00.000Z',
+      },
+    });
+    const svg = wrapper.find('svg').element as SVGSVGElement;
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1024, height: 1024, right: 1024, bottom: 1024, x: 0, y: 0, toJSON: () => ({}) });
+
+    await wrapper.setProps({ focusedTarget: { type: 'groundStation', id: station.id } });
+
+    const stationPoint = projectMapPoint(station.lonDeg, station.latDeg);
+    const focusedViewBox = parseViewBox(wrapper.find('svg').attributes('viewBox') ?? '');
+    expect(focusedViewBox.x + focusedViewBox.width / 2).toBeCloseTo(stationPoint.x, 1);
+    expect(focusedViewBox.y + focusedViewBox.height / 2).toBeCloseTo(stationPoint.y, 1);
+
+    await wrapper.find('svg').trigger('wheel', {
+      shiftKey: true,
+      deltaY: 9000,
+      deltaX: 0,
+      clientX: 512,
+      clientY: 512,
+    });
+
+    const pannedViewBox = parseViewBox(wrapper.find('svg').attributes('viewBox') ?? '');
+    expect(pannedViewBox.x).toBeGreaterThan(1024);
+    expect(wrapper.findAll('.orbit-map__world-copy').length).toBeGreaterThan(1);
+  });
 });
+
+function parseViewBox(value: string) {
+  const [x, y, width, height] = value.split(/\s+/).map(Number);
+  return { x, y, width, height };
+}
+
+function projectMapPoint(lon: number, lat: number) {
+  const mapSize = 256 * 2 ** 2;
+  const clampedLat = Math.min(Math.max(lat, -85.05112878), 85.05112878);
+  const sinLat = Math.sin((clampedLat * Math.PI) / 180);
+  return {
+    x: ((lon + 180) / 360) * mapSize,
+    y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * mapSize,
+  };
+}
