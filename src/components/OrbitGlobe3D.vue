@@ -1074,14 +1074,6 @@ function toggleAutoRotate() {
   autoRotate.value = !autoRotate.value;
 }
 
-function resetGlobeRotation() {
-  cancelGlobeFocusAnimation();
-  setGlobeRotation({ ...INITIAL_EARTH_ROTATION });
-  autoRotate.value = false;
-  isInteracting.value = false;
-  pointerStart = null;
-}
-
 function beginPinch() {
   const [first, second] = Array.from(activePointers.values());
   if (!first || !second) return;
@@ -1444,13 +1436,6 @@ onBeforeUnmount(() => {
           @click="toggleAutoRotate"
         >
           {{ autoRotate ? '회전 정지' : '회전 재개' }}
-        </button>
-        <button
-          class="orbit-map__rotate-toggle"
-          type="button"
-          @click="resetGlobeRotation"
-        >
-          축 초기화
         </button>
         <div class="orbit-map__clock">
           <span>{{ orbitModeLabel }}</span>
