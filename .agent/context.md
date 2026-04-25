@@ -72,3 +72,5 @@
 - 2026-04-25: CDM V1.5 direction is SOCRATES Plus ingest, not in-app all-vs-all. Worker parses CelesTrak raw CSV (`/SOCRATES/sort-minRange.csv`) with limit/catnr filtering; Briefing exposes 전체/Tracked/Focused CDM scopes.
 
 - 2026-04-26: Ground-station elevation is strictly local `GroundStation.elevationMaskDeg` user override/default data, not externally queried hardware metadata. Contact countdowns should avoid `계산 중` by preserving open-ended pass windows through the prediction horizon, using 1-minute focused priority passes, and falling back to cached focused AOS/LOS threshold scans. Ground Stations now has its own top-level route with all-station controls and worker-backed current visible-satellite scans.
+
+- 2026-04-26: Ground-station elevation masks now carry provenance metadata (`verified`/`inferred`/`default`/`user`). Keep numeric masks user-overridable, show source confidence in Briefing/Ground Stations/More, and backfill local default source metadata even when the deployed Worker `/api/ground-stations` response has not yet been updated.

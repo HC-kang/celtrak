@@ -5,6 +5,12 @@ import PanelCard from '@/components/PanelCard.vue';
 import OriginBadge from '@/components/OriginBadge.vue';
 import { useAppStore } from '@/stores/app';
 import { formatTimestamp } from '@/lib/format';
+import {
+  createUserElevationMaskSource,
+  elevationMaskSourceDetail,
+  elevationMaskSourceLabel,
+  withUserElevationMaskSource,
+} from '@/lib/groundStationElevation';
 import type { CatalogEntry, GroundStation } from '@/domain/types';
 import type {
   VisibleSatelliteCandidate,
@@ -70,6 +76,7 @@ async function addGroundStation() {
     lonDeg: Number(stationForm.lonDeg),
     altitudeM: Number(stationForm.altitudeM),
     elevationMaskDeg: clampElevation(Number(stationForm.elevationMaskDeg)),
+    elevationMaskSource: createUserElevationMaskSource(),
     enabled: true,
     schemaVersion: 1,
   });
@@ -96,7 +103,7 @@ function setAllGroundStations(enabled: boolean) {
 
 function updateStationMask(station: GroundStation, value: string) {
   const elevationMaskDeg = clampElevation(Number(value));
-  void store.upsertGroundStation({ ...station, elevationMaskDeg });
+  void store.upsertGroundStation(withUserElevationMaskSource({ ...station, elevationMaskDeg }));
 }
 
 async function scanVisibleSatellites() {
@@ -162,6 +169,7 @@ function cloneStation(station: GroundStation): GroundStation {
     lonDeg: station.lonDeg,
     altitudeM: station.altitudeM,
     elevationMaskDeg: station.elevationMaskDeg,
+    elevationMaskSource: station.elevationMaskSource ? { ...station.elevationMaskSource } : undefined,
     enabled: station.enabled,
     schemaVersion: station.schemaVersion,
   };
@@ -239,6 +247,19 @@ function clampElevation(value: number) {
                 @change="store.toggleGroundStation(station.id, ($event.target as HTMLInputElement).checked)"
               />
             </label>
+            <a
+              v-if="station.elevationMaskSource?.url"
+              class="station-ops__source-badge"
+              :href="station.elevationMaskSource.url"
+              target="_blank"
+              rel="noreferrer"
+              :title="elevationMaskSourceDetail(station.elevationMaskSource)"
+            >
+              {{ elevationMaskSourceLabel(station.elevationMaskSource) }}
+            </a>
+            <span v-else class="station-ops__source-badge" :title="elevationMaskSourceDetail(station.elevationMaskSource)">
+              {{ elevationMaskSourceLabel(station.elevationMaskSource) }}
+            </span>
             <label class="station-ops__mask">
               <span>Elevation</span>
               <input
@@ -266,7 +287,7 @@ function clampElevation(value: number) {
           <label class="field-label" for="visible-station">Station</label>
           <select id="visible-station" v-model="selectedStationId" class="input">
             <option v-for="station in store.groundStations" :key="station.id" :value="station.id">
-              {{ station.name }} · {{ station.elevationMaskDeg }}°
+              {{ station.name }} · {{ station.elevationMaskDeg }}° · {{ elevationMaskSourceLabel(station.elevationMaskSource) }}
             </option>
           </select>
         </div>

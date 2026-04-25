@@ -134,8 +134,19 @@ export interface GroundStation {
   lonDeg: number;
   altitudeM: number;
   elevationMaskDeg: number;
+  elevationMaskSource?: GroundStationElevationMaskSource;
   enabled: boolean;
   schemaVersion: 1;
+}
+
+export type ElevationMaskSourceConfidence = 'verified' | 'inferred' | 'default' | 'user';
+
+export interface GroundStationElevationMaskSource {
+  confidence: ElevationMaskSourceConfidence;
+  label: string;
+  url?: string;
+  note?: string;
+  updatedAt?: string;
 }
 
 export interface UserPreferences {

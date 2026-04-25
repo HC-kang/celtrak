@@ -14,6 +14,7 @@ import { formatPercent, formatRelative, formatTimestamp, truncate } from '@/lib/
 import { usePassPredictions } from '@/composables/usePassPredictions';
 import { buildLiveContactLinks } from '@/lib/contactLinks';
 import { classifyConjunctionSeverity, conjunctionSeverityRank } from '@/lib/conjunctionRisk';
+import { elevationMaskSourceLabel, withUserElevationMaskSource } from '@/lib/groundStationElevation';
 import type { CatalogEntry, ConjunctionRecord, FleetMemberRef, GroundStation, LiveContactLink, MapFocusTarget } from '@/domain/types';
 
 const OrbitGlobe3D = defineAsyncComponent(() => import('@/components/OrbitGlobe3D.vue'));
@@ -411,7 +412,7 @@ function cloneFleetMemberRef(refItem: FleetMemberRef): FleetMemberRef {
 function updateStationMask(station: GroundStation, value: string) {
   const elevationMaskDeg = Number(value);
   if (!Number.isFinite(elevationMaskDeg)) return;
-  void store.upsertGroundStation({ ...station, elevationMaskDeg: Math.min(Math.max(elevationMaskDeg, 0), 90) });
+  void store.upsertGroundStation(withUserElevationMaskSource({ ...station, elevationMaskDeg: Math.min(Math.max(elevationMaskDeg, 0), 90) }));
 }
 
 function toggleFocusedStation(station: GroundStation, enabled: boolean) {
@@ -634,6 +635,9 @@ watch(
                     @change="updateStationMask(focusedStation, ($event.target as HTMLInputElement).value)"
                   />
                 </label>
+                <small class="focus-inspector__source">
+                  {{ elevationMaskSourceLabel(focusedStation.elevationMaskSource) }} elevation mask
+                </small>
               </div>
             </template>
 
@@ -717,7 +721,10 @@ watch(
                     />
                     <span>
                       <strong>{{ station.name }}</strong>
-                      <small>{{ station.latDeg.toFixed(2) }}, {{ station.lonDeg.toFixed(2) }} · {{ station.elevationMaskDeg }}° mask</small>
+                      <small>
+                        {{ station.latDeg.toFixed(2) }}, {{ station.lonDeg.toFixed(2) }} · {{ station.elevationMaskDeg }}° mask ·
+                        {{ elevationMaskSourceLabel(station.elevationMaskSource) }}
+                      </small>
                     </span>
                   </label>
                   <button class="button button--ghost panel-card__action-link" type="button" @click="setFocusedTarget({ type: 'groundStation', id: station.id })">

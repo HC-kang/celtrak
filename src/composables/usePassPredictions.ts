@@ -146,6 +146,7 @@ function cloneGroundStation(station: GroundStation): GroundStation {
     lonDeg: station.lonDeg,
     altitudeM: station.altitudeM,
     elevationMaskDeg: station.elevationMaskDeg,
+    elevationMaskSource: station.elevationMaskSource ? { ...station.elevationMaskSource } : undefined,
     enabled: station.enabled,
     schemaVersion: station.schemaVersion,
   };

@@ -18,10 +18,12 @@ import type {
 } from '@/domain/types';
 import { createGateway, type ConjunctionQuery } from '@/services/gateway';
 import { createFleetStore } from '@/services/store/createFleetStore';
+import { defaultGroundStations } from '@/services/defaultGroundStations';
 import { loadPreferences, savePreferences } from '@/lib/prefs';
 import { nowIso } from '@/lib/time';
 import { parseImportedText } from '@/services/tleParser';
 import { getPreferredRenderMode } from '@/lib/device';
+import { createUserElevationMaskSource } from '@/lib/groundStationElevation';
 
 const gateway = createGateway();
 const fleetStore = createFleetStore();
@@ -138,11 +140,33 @@ export const useAppStore = defineStore('app', () => {
       anomalies.value = await fleetStore.listAnomalies({});
       events.value = await fleetStore.listEvents(nowIso(), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString());
 
-      const defaults = await gateway.getGroundStations();
+      const defaults = enrichDefaultGroundStationSources(await gateway.getGroundStations());
       const existingStationIds = new Set(groundStations.value.map((station) => station.id));
       const missingDefaults = defaults.filter((station) => !existingStationIds.has(station.id));
       if (missingDefaults.length) {
         for (const station of missingDefaults) {
+          await fleetStore.upsertGroundStation(station);
+        }
+        groundStations.value = await fleetStore.listGroundStations();
+      }
+      const defaultsById = new Map(defaults.map((station) => [station.id, station]));
+      const stationsNeedingMaskSource = groundStations.value
+        .map((station) => {
+          const defaultStation = defaultsById.get(station.id);
+          if (station.elevationMaskSource?.confidence === 'user') return null;
+          if (!defaultStation?.elevationMaskSource) {
+            return station.elevationMaskSource ? null : { ...station, elevationMaskSource: createUserElevationMaskSource() };
+          }
+          const elevationMaskSource =
+            station.elevationMaskDeg === defaultStation.elevationMaskDeg
+              ? defaultStation.elevationMaskSource
+              : createUserElevationMaskSource();
+          if (sameElevationMaskSource(station.elevationMaskSource, elevationMaskSource)) return null;
+          return { ...station, elevationMaskSource };
+        })
+        .filter((station): station is GroundStation => Boolean(station));
+      if (stationsNeedingMaskSource.length) {
+        for (const station of stationsNeedingMaskSource) {
           await fleetStore.upsertGroundStation(station);
         }
         groundStations.value = await fleetStore.listGroundStations();
@@ -591,6 +615,32 @@ function matchesRef(left: FleetMemberRef, right: FleetMemberRef) {
 function preferredFleetId(fleets: UserFleet[], candidate?: string | null) {
   if (candidate && fleets.some((fleet) => fleet.id === candidate)) return candidate;
   return fleets[0]?.id ?? null;
+}
+
+function enrichDefaultGroundStationSources(stations: GroundStation[]) {
+  const localDefaults = new Map(defaultGroundStations.map((station) => [station.id, station]));
+  const remoteIds = new Set(stations.map((station) => station.id));
+  return [
+    ...stations.map((station) => {
+      const localDefault = localDefaults.get(station.id);
+      return {
+        ...(localDefault ?? {}),
+        ...station,
+        elevationMaskSource: station.elevationMaskSource ?? localDefault?.elevationMaskSource,
+      };
+    }),
+    ...defaultGroundStations.filter((station) => !remoteIds.has(station.id)),
+  ];
+}
+
+function sameElevationMaskSource(left: GroundStation['elevationMaskSource'], right: GroundStation['elevationMaskSource']) {
+  if (!left || !right) return left === right;
+  return (
+    left.confidence === right.confidence &&
+    left.label === right.label &&
+    left.url === right.url &&
+    left.note === right.note
+  );
 }
 
 function createSeedEvents(): ScheduledEvent[] {

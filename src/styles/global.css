@@ -943,6 +943,15 @@ textarea:focus-visible {
   font-size: 0.72rem;
 }
 
+.focus-inspector__source {
+  align-self: center;
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .ground-station-control {
   min-height: 0;
   border-color: rgba(83, 177, 255, 0.18);
@@ -1542,6 +1551,21 @@ textarea:focus-visible {
 .station-ops__mask .input {
   min-height: 36px;
   padding: 7px 9px;
+}
+
+.station-ops__source-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 7px 12px;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 800;
+  text-decoration: none;
+  border-radius: 999px;
+  background: rgba(0, 112, 204, 0.08);
+  border: 1px solid rgba(0, 112, 204, 0.18);
 }
 
 .station-ops__scanner {
