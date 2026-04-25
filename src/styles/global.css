@@ -888,7 +888,8 @@ textarea:focus-visible {
 }
 
 .focus-inspector__station-list--expanded {
-  max-height: clamp(420px, 44vw, 620px);
+  max-height: clamp(320px, 34vw, 440px);
+  padding-bottom: 2px;
 }
 
 .focus-inspector__station-toggle {
@@ -997,9 +998,10 @@ textarea:focus-visible {
 }
 
 .tracking-scope__object-list {
-  max-height: clamp(420px, 44vw, 620px);
+  max-height: clamp(320px, 34vw, 440px);
   overflow: auto;
   padding-right: 2px;
+  padding-bottom: 2px;
 }
 
 .tracking-scope__object {

@@ -60,3 +60,5 @@
 - 2026-04-25: After smooth 3D focus, the separate globe `축 초기화` button is no longer needed. Keep auto-rotation pause/resume, but avoid extra orientation controls that duplicate focus behavior.
 - 2026-04-25: 2D map flicker with many tracked satellites is caused by high-volume SVG node patching. For >20 plotted satellites, render dynamic tracks/links/stations into one RAF-batched canvas layer and keep SVG for base map/night mask; keep SVG mode for small fleets to preserve simple DOM interaction.
 - 2026-04-25: UI screenshot pass found oversized pill buttons and mobile bottom-nav crowding. Keep global buttons at 40px min height, avoid hover scale transforms, compact dense panel/table buttons, use one-row desktop time-jump controls, and hide the 2D map clock on mobile so map nav does not collide with bottom tabs.
+
+- 2026-04-25: Screenshot-based UI review should use full-page captures, not viewport-only. Full-page Briefing review found Tracking Scope/Ground Station lists can clip inside the war-room; keep expanded side lists shorter and internally scrollable.
