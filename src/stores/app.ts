@@ -42,6 +42,7 @@ export const useAppStore = defineStore('app', () => {
   const decayPredictions = ref<DecayPrediction[]>([]);
   const preferences = ref<UserPreferences>(loadPreferences());
   const loading = ref(false);
+  const loadingMessage = ref('데이터 동기화 준비 중');
   const offline = ref(typeof navigator !== 'undefined' ? !navigator.onLine : false);
   const updateAvailable = ref(false);
   const updateCallback = ref<(() => Promise<void>) | null>(null);
@@ -119,6 +120,7 @@ export const useAppStore = defineStore('app', () => {
 
   async function bootstrap() {
     loading.value = true;
+    loadingMessage.value = 'CelesTrak 카탈로그와 우주환경 데이터를 불러오는 중';
     try {
       const [catalogData, weatherData, conjunctionData, decayData, alertsData] = await Promise.all([
         gateway.getCatalog(),
@@ -133,6 +135,7 @@ export const useAppStore = defineStore('app', () => {
       decayPredictions.value = decayData;
       alerts.value = alertsData;
 
+      loadingMessage.value = '로컬 워크스페이스와 플릿 데이터를 준비하는 중';
       fleets.value = await fleetStore.listFleets();
       customTles.value = await fleetStore.listCustomTLEs();
       groundStations.value = await fleetStore.listGroundStations();
@@ -163,6 +166,7 @@ export const useAppStore = defineStore('app', () => {
       }
 
       selectedFleetId.value = selectedFleet.value?.id ?? null;
+      loadingMessage.value = '선택 플릿 상태와 지상국 설정을 적용하는 중';
       await hydrateOpsStatuses();
       if (!preferences.value.defaultGroundStationId && groundStations.value[0]) {
         updatePreferences({ defaultGroundStationId: groundStations.value[0].id });
@@ -170,6 +174,7 @@ export const useAppStore = defineStore('app', () => {
       lastSyncedAt.value = nowIso();
     } finally {
       loading.value = false;
+      loadingMessage.value = '동기화 완료';
     }
   }
 
@@ -467,6 +472,7 @@ export const useAppStore = defineStore('app', () => {
     isFleetMemberHidden,
     lastSyncedAt,
     loading,
+    loadingMessage,
     closeAnomaly,
     addCustomTleToFleet,
     latestStatusFor,
