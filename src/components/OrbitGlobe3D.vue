@@ -26,6 +26,7 @@ const autoRotate = ref(true);
 const TRACK_COLORS = ['#53b1ff', '#1eaedb', '#0070cc', '#ffffff', '#d53b00', '#1883fd'];
 const EARTH_RADIUS = 1.5;
 const DEFAULT_CAMERA_DISTANCE = 5.45;
+const INITIAL_EARTH_ROTATION = { x: -0.2, y: -0.52, z: 0.02 };
 type GeoPoint = [number, number];
 type GeoPolygon = GeoPoint[];
 interface PointerSnapshot {
@@ -93,7 +94,7 @@ function buildScene() {
   scene.add(createStarField(props.dataSaver ? 220 : 620));
 
   earthRig = new THREE.Group();
-  earthRig.rotation.set(-0.2, -0.52, 0.02);
+  earthRig.rotation.set(INITIAL_EARTH_ROTATION.x, INITIAL_EARTH_ROTATION.y, INITIAL_EARTH_ROTATION.z);
   scene.add(earthRig);
 
   globeLayer = new THREE.Group();
@@ -277,11 +278,16 @@ function updateGroundStations() {
   if (!stationLayer) return;
   clearStationLayer();
 
+  const activeStationIds = new Set(
+    (props.contactLinks ?? []).filter((link) => link.status === 'IN_CONTACT').map((link) => link.groundStationId),
+  );
   const stations = enabledGroundStations.value.slice(0, props.dataSaver ? 12 : 28);
   for (const [index, station] of stations.entries()) {
-    const color = new THREE.Color(index % 3 === 0 ? '#ffffff' : '#53b1ff');
     const group = new THREE.Group();
     const focusTarget = { type: 'groundStation', id: station.id } satisfies MapFocusTarget;
+    const focused = targetMatches(props.focusedTarget, focusTarget);
+    const hasActiveContact = activeStationIds.has(station.id);
+    const color = new THREE.Color(focused ? '#ffffff' : hasActiveContact ? '#1eaedb' : '#53b1ff');
     const surface = latLonToVector(station.latDeg, station.lonDeg, EARTH_RADIUS + 0.035);
     const normal = surface.clone().normalize();
 
@@ -290,7 +296,7 @@ function updateGroundStations() {
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: targetMatches(props.focusedTarget, focusTarget) ? 1 : 0.95,
+        opacity: focused ? 1 : hasActiveContact ? 0.95 : 0.72,
       }),
     );
     marker.position.copy(surface);
@@ -302,7 +308,7 @@ function updateGroundStations() {
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.42,
+        opacity: focused ? 0.62 : hasActiveContact ? 0.48 : 0.26,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       }),
@@ -317,7 +323,7 @@ function updateGroundStations() {
       new THREE.LineBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.38,
+        opacity: hasActiveContact || focused ? 0.44 : 0.2,
         depthWrite: false,
       }),
     );
@@ -356,7 +362,8 @@ function updateContactLinks() {
   const baseTime = new Date(props.orbitTimeIso);
   const entries = new Map(props.satellites.filter((entry) => entry.tle).map((entry) => [`catalog:${entry.satcat.catalogNumber}`, entry]));
   const stations = new Map(enabledGroundStations.value.map((station) => [station.id, station]));
-  const links = (props.contactLinks ?? []).filter((link) => link.status === 'IN_CONTACT').slice(0, props.dataSaver ? 12 : 32);
+  const activeLinks = (props.contactLinks ?? []).filter((link) => link.status === 'IN_CONTACT');
+  const links = props.dataSaver ? activeLinks.slice(0, 48) : activeLinks;
 
   for (const link of links) {
     const entry = entries.get(link.satelliteId);
@@ -1051,6 +1058,14 @@ function toggleAutoRotate() {
   autoRotate.value = !autoRotate.value;
 }
 
+function resetGlobeRotation() {
+  if (!earthRig) return;
+  earthRig.rotation.set(INITIAL_EARTH_ROTATION.x, INITIAL_EARTH_ROTATION.y, INITIAL_EARTH_ROTATION.z);
+  autoRotate.value = false;
+  isInteracting.value = false;
+  pointerStart = null;
+}
+
 function beginPinch() {
   const [first, second] = Array.from(activePointers.values());
   if (!first || !second) return;
@@ -1276,7 +1291,10 @@ watch(
 
 watch(
   () => props.contactLinks,
-  () => updateContactLinks(),
+  () => {
+    updateGroundStations();
+    updateContactLinks();
+  },
   { deep: true },
 );
 
@@ -1339,6 +1357,13 @@ onBeforeUnmount(() => {
           @click="toggleAutoRotate"
         >
           {{ autoRotate ? '회전 정지' : '회전 재개' }}
+        </button>
+        <button
+          class="orbit-map__rotate-toggle"
+          type="button"
+          @click="resetGlobeRotation"
+        >
+          축 초기화
         </button>
         <div class="orbit-map__clock">
           <span>{{ orbitModeLabel }}</span>

@@ -61,7 +61,6 @@ export function predictPasses({ satellites, stations, hours, startTimeIso }: Pas
           inPass = false;
           passStart = null;
           peak = null;
-          if (results.length > 30) return results.slice(0, 30);
         }
 
         currentTime = new Date(currentTime.getTime() + stepMinutes * 60 * 1000);
@@ -69,7 +68,8 @@ export function predictPasses({ satellites, stations, hours, startTimeIso }: Pas
     }
   }
 
-  return results.sort((a, b) => a.aos.localeCompare(b.aos)).slice(0, 24);
+  const maxResults = Math.min(Math.max(satellites.length * stations.length * 8, 48), 800);
+  return results.sort((a, b) => a.aos.localeCompare(b.aos)).slice(0, maxResults);
 }
 
 function createLookSnapshot(

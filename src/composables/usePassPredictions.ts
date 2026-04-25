@@ -33,7 +33,7 @@ export function usePassPredictions() {
   watch(
     () => [store.selectedFleet, store.catalog, store.customTles, store.groundStations, store.simulationTimeIso, store.preferences.hiddenTrackedRefs] as const,
     () => refresh(),
-    { deep: true },
+    { deep: true, immediate: true },
   );
 
   onBeforeUnmount(() => worker.terminate());

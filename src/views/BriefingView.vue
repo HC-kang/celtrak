@@ -26,6 +26,7 @@ const orbitClockTick = ref(Date.now());
 const mapControlsOpen = ref(false);
 const mapFocusMode = ref(false);
 const focusedTarget = ref<MapFocusTarget | null>(null);
+const trackingScopeTab = ref<'groundStations' | 'trackedObjects'>('groundStations');
 let orbitClockTimer: number | null = null;
 usePassPredictions();
 
@@ -131,6 +132,7 @@ const focusedStation = computed(() => {
 });
 
 const enabledGroundStationCount = computed(() => store.groundStations.filter((station) => station.enabled).length);
+const visibleTrackedObjectCount = computed(() => trackedObjects.value.filter((item) => !item.hidden).length);
 
 const focusedLinks = computed(() => {
   const target = focusedTarget.value;
@@ -578,39 +580,104 @@ function refKey(member: FleetMemberRef) {
             </div>
           </section>
 
-          <section class="war-room__side-card ground-station-control">
+          <section class="war-room__side-card ground-station-control tracking-scope">
             <div class="war-room__side-header">
               <div>
-                <p class="eyebrow">Ground Stations</p>
-                <strong>{{ enabledGroundStationCount }}/{{ store.groundStations.length }} selected</strong>
+                <p class="eyebrow">Tracking Scope</p>
+                <strong>{{ enabledGroundStationCount }}/{{ store.groundStations.length }} stations · {{ visibleTrackedObjectCount }}/{{ trackedObjects.length }} objects</strong>
               </div>
+            </div>
+            <div class="tracking-scope__tabs" role="tablist" aria-label="Tracking scope controls">
+              <button
+                class="tracking-scope__tab"
+                :class="{ 'tracking-scope__tab--active': trackingScopeTab === 'groundStations' }"
+                type="button"
+                role="tab"
+                :aria-selected="trackingScopeTab === 'groundStations'"
+                @click="trackingScopeTab = 'groundStations'"
+              >
+                Ground Stations
+              </button>
+              <button
+                class="tracking-scope__tab"
+                :class="{ 'tracking-scope__tab--active': trackingScopeTab === 'trackedObjects' }"
+                type="button"
+                role="tab"
+                :aria-selected="trackingScopeTab === 'trackedObjects'"
+                @click="trackingScopeTab = 'trackedObjects'"
+              >
+                Tracked Objects
+              </button>
+            </div>
+
+            <div v-if="trackingScopeTab === 'groundStations'" class="tracking-scope__panel">
               <div class="ground-station-control__actions">
                 <button class="button button--ghost panel-card__action-link" type="button" @click="setAllGroundStations(true)">모두선택</button>
                 <button class="button button--ghost panel-card__action-link" type="button" @click="setAllGroundStations(false)">모두해제</button>
               </div>
+              <div class="focus-inspector__station-list focus-inspector__station-list--expanded">
+                <article
+                  v-for="station in store.groundStations"
+                  :key="station.id"
+                  class="focus-inspector__station-toggle"
+                  :class="{ 'focus-inspector__station-toggle--active': station.enabled }"
+                >
+                  <label>
+                    <input
+                      :checked="station.enabled"
+                      type="checkbox"
+                      @change="toggleFocusedStation(station, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span>
+                      <strong>{{ station.name }}</strong>
+                      <small>{{ station.latDeg.toFixed(2) }}, {{ station.lonDeg.toFixed(2) }} · {{ station.elevationMaskDeg }}° mask</small>
+                    </span>
+                  </label>
+                  <button class="button button--ghost panel-card__action-link" type="button" @click="setFocusedTarget({ type: 'groundStation', id: station.id })">
+                    보기
+                  </button>
+                </article>
+              </div>
             </div>
-            <div class="focus-inspector__station-list focus-inspector__station-list--expanded">
-              <article
-                v-for="station in store.groundStations"
-                :key="station.id"
-                class="focus-inspector__station-toggle"
-                :class="{ 'focus-inspector__station-toggle--active': station.enabled }"
-              >
-                <label>
-                  <input
-                    :checked="station.enabled"
-                    type="checkbox"
-                    @change="toggleFocusedStation(station, ($event.target as HTMLInputElement).checked)"
-                  />
-                  <span>
-                    <strong>{{ station.name }}</strong>
-                    <small>{{ station.latDeg.toFixed(2) }}, {{ station.lonDeg.toFixed(2) }} · {{ station.elevationMaskDeg }}° mask</small>
-                  </span>
-                </label>
-                <button class="button button--ghost panel-card__action-link" type="button" @click="setFocusedTarget({ type: 'groundStation', id: station.id })">
-                  보기
-                </button>
-              </article>
+
+            <div v-else class="tracking-scope__panel">
+              <div class="ground-station-control__actions">
+                <RouterLink class="button button--ghost panel-card__action-link" to="/catalog">Catalog에서 추가</RouterLink>
+                <RouterLink class="button button--ghost panel-card__action-link" to="/fleets">Fleet 관리</RouterLink>
+              </div>
+              <div v-if="trackedObjects.length" class="tracking-scope__object-list">
+                <article
+                  v-for="item in trackedObjects"
+                  :key="item.key"
+                  class="tracking-scope__object"
+                  :class="{ 'tracking-scope__object--muted': item.hidden }"
+                >
+                  <div>
+                    <strong>{{ item.name }}</strong>
+                    <p>{{ item.hidden ? `${item.detail} · briefing 표시 숨김` : item.detail }}</p>
+                  </div>
+                  <div class="tracking-scope__object-actions">
+                    <small>{{ item.hidden ? 'HIDDEN' : item.source }}</small>
+                    <button
+                      v-if="item.key.startsWith('catalog:')"
+                      class="button button--ghost panel-card__action-link"
+                      type="button"
+                      @click="setFocusedTarget({ type: 'satellite', id: item.key })"
+                    >
+                      보기
+                    </button>
+                    <button class="button button--ghost panel-card__action-link" type="button" @click="store.toggleFleetMemberHidden(item.ref)">
+                      {{ item.hidden ? '표시' : '숨기기' }}
+                    </button>
+                    <button class="button button--ghost panel-card__action-link" type="button" @click="store.removeFleetMember(item.ref)">제거</button>
+                  </div>
+                </article>
+              </div>
+              <div v-else class="empty-state empty-state--action">
+                <strong>추적 중인 객체가 없습니다.</strong>
+                <p>Catalog에서 위성을 선택하면 지도와 링크 계산 대상에 포함됩니다.</p>
+                <RouterLink class="button" to="/catalog">Catalog에서 추가</RouterLink>
+              </div>
             </div>
           </section>
         </aside>
@@ -737,41 +804,6 @@ function refKey(member: FleetMemberRef) {
           </div>
           <small>0 open</small>
         </article>
-      </div>
-    </PanelCard>
-
-    <PanelCard title="Tracked Objects" subtitle="Selected fleet">
-      <template #actions>
-        <RouterLink class="button button--ghost panel-card__action-link" to="/catalog">Catalog에서 추가</RouterLink>
-        <RouterLink class="button button--ghost panel-card__action-link" to="/fleets">Fleet 관리</RouterLink>
-      </template>
-      <div v-if="trackedObjects.length" class="table-like">
-        <article v-for="item in trackedObjects" :key="item.key" class="table-like__row" :class="{ 'table-like__row--muted': item.hidden }">
-          <div>
-            <strong>{{ item.name }}</strong>
-            <p>{{ item.hidden ? `${item.detail} · briefing 표시 숨김` : item.detail }}</p>
-          </div>
-          <div class="inline-actions">
-            <small>{{ item.hidden ? 'HIDDEN' : item.source }}</small>
-            <button
-              v-if="item.key.startsWith('catalog:')"
-              class="button button--ghost"
-              type="button"
-              @click="setFocusedTarget({ type: 'satellite', id: item.key })"
-            >
-              보기
-            </button>
-            <button class="button button--ghost" type="button" @click="store.toggleFleetMemberHidden(item.ref)">
-              {{ item.hidden ? '표시' : '숨기기' }}
-            </button>
-            <button class="button button--ghost" type="button" @click="store.removeFleetMember(item.ref)">플릿에서 제거</button>
-          </div>
-        </article>
-      </div>
-      <div v-else class="empty-state empty-state--action">
-        <strong>추적 중인 객체가 없습니다.</strong>
-        <p>Catalog에서 위성을 선택하면 Briefing 지도, 패스, 위험 신호 계산 대상에 포함됩니다.</p>
-        <RouterLink class="button" to="/catalog">Catalog에서 추가</RouterLink>
       </div>
     </PanelCard>
 

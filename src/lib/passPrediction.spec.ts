@@ -35,4 +35,36 @@ describe('predictPasses', () => {
     expect(passes.length).toBeGreaterThan(0);
     expect(new Date(passes[0].aos).getTime()).toBeGreaterThanOrEqual(new Date(startTimeIso).getTime());
   });
+
+  it('keeps pass windows across all enabled station pairs', () => {
+    const stations = Array.from({ length: 8 }, (_, index) => ({
+      id: `gs-${index + 1}`,
+      name: `Station ${index + 1}`,
+      latDeg: 37.5665,
+      lonDeg: 126.978,
+      altitudeM: 38,
+      elevationMaskDeg: 10,
+      enabled: true,
+      schemaVersion: 1 as const,
+    }));
+
+    const passes = predictPasses({
+      startTimeIso: '2026-04-23T00:00:00.000Z',
+      hours: 24,
+      stations,
+      satellites: [
+        {
+          satelliteRef: { refType: 'catalog', catalogNumber: 25544, tags: [] },
+          name: 'ISS',
+          tle: {
+            format: 'TLE',
+            line1: '1 25544U 98067A   24110.55260417  .00016717  00000+0  10270-3 0  9996',
+            line2: '2 25544  51.6415 162.1898 0004620 250.2941 232.6818 15.50376377446559',
+          },
+        },
+      ],
+    });
+
+    expect(new Set(passes.map((pass) => pass.groundStationId)).size).toBe(stations.length);
+  });
 });
