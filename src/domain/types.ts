@@ -209,6 +209,7 @@ export interface DecayPrediction extends TimestampedOrigin {
 export interface PassPrediction extends TimestampedOrigin {
   satelliteRef: FleetMemberRef;
   groundStationId: string;
+  elevationMaskDeg: number;
   aos: string;
   tca: string;
   los: string;
@@ -239,6 +240,7 @@ export interface LiveContactLink {
   tca?: string;
   los?: string;
   countdownSeconds?: number;
+  countdownIsEstimated?: boolean;
   countdownIsLowerBound?: boolean;
 }
 

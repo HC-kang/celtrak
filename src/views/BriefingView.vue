@@ -13,6 +13,7 @@ import { useViewport } from '@/composables/useViewport';
 import { formatPercent, formatRelative, formatTimestamp, truncate } from '@/lib/format';
 import { usePassPredictions } from '@/composables/usePassPredictions';
 import { buildLiveContactLinks } from '@/lib/contactLinks';
+import type { ContactPrecisionCandidate, ContactPrecisionResult, ContactPrecisionWorkerResult } from '@/lib/contactPrecision';
 import { classifyConjunctionSeverity, conjunctionSeverityRank } from '@/lib/conjunctionRisk';
 import { elevationMaskSourceLabel, withUserElevationMaskSource } from '@/lib/groundStationElevation';
 import type { CatalogEntry, ConjunctionRecord, FleetMemberRef, GroundStation, LiveContactLink, MapFocusTarget } from '@/domain/types';
@@ -32,7 +33,11 @@ const cdmScope = ref<'tracked' | 'focused' | 'all'>('tracked');
 const cdmScopeRecords = ref<ConjunctionRecord[] | null>(null);
 const cdmLoading = ref(false);
 const cdmError = ref('');
+const contactPrecisionResults = ref<Record<string, ContactPrecisionResult>>({});
+const contactPrecisionPendingKeys = ref<Set<string>>(new Set());
 let orbitClockTimer: number | null = null;
+let contactPrecisionWorker: Worker | null = null;
+let contactPrecisionRequestId = 0;
 usePassPredictions(focusedTarget);
 
 onMounted(() => {
@@ -45,6 +50,7 @@ onUnmounted(() => {
   if (orbitClockTimer) {
     window.clearInterval(orbitClockTimer);
   }
+  contactPrecisionWorker?.terminate();
 });
 
 const visibleFleetEntries = computed<CatalogEntry[]>(() =>
@@ -220,6 +226,31 @@ const displayedOrbitTime = computed(() => {
   return new Date(liveOrbitAnchor.value + elapsedMs * livePlaybackRate.value);
 });
 const displayedOrbitTimeIso = computed(() => displayedOrbitTime.value.toISOString());
+const focusedPrecisionCandidates = computed<ContactPrecisionCandidate[]>(() => {
+  if (!focusedTarget.value) return [];
+  const satellitesById = new Map(contactSatellites.value.map((satellite) => [refKey(satellite.satelliteRef), satellite]));
+  const stationsById = new Map(store.groundStations.map((station) => [station.id, station]));
+  return focusedLinks.value
+    .filter((link) => link.status === 'IN_CONTACT' || link.status === 'BEFORE_AOS')
+    .map((link): ContactPrecisionCandidate | null => {
+      const sat = satellitesById.get(link.satelliteId);
+      const station = stationsById.get(link.groundStationId);
+      if (!sat || !station) return null;
+      return {
+        satelliteId: link.satelliteId,
+        groundStationId: link.groundStationId,
+        status: link.status,
+        tle: { ...sat.tle },
+        station: cloneGroundStationForWorker(station),
+      };
+    })
+    .filter((candidate): candidate is ContactPrecisionCandidate => Boolean(candidate));
+});
+const focusedPrecisionRequestKey = computed(() => {
+  if (!focusedPrecisionCandidates.value.length) return '';
+  const timeKey = store.simulationTimeIso ? displayedOrbitTimeIso.value : 'live';
+  return [timeKey, ...focusedPrecisionCandidates.value.map(precisionCandidateSignature)].join('||');
+});
 
 const warRoomStats = computed(() => [
   { label: 'Visible Tracks', value: `${visibleFleetEntries.value.length}/${trackedObjects.value.length}`, tone: 'good' },
@@ -351,18 +382,20 @@ function clearFocusedTarget() {
   focusedTarget.value = null;
 }
 
-function formatCountdown(seconds: number | undefined, lowerBound = false) {
+function formatCountdown(seconds: number | undefined, lowerBound = false, estimated = false) {
   if (seconds === undefined) return '예측 대기';
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const remainingSeconds = seconds % 60;
   const value = [hours, minutes, remainingSeconds].map((item) => item.toString().padStart(2, '0')).join(':');
-  return lowerBound ? `${value}+` : value;
+  return `${estimated ? '약 ' : ''}${lowerBound ? `${value}+` : value}`;
 }
 
 function linkStatusLabel(link: LiveContactLink) {
-  if (link.status === 'IN_CONTACT') return `LOS까지 ${formatCountdown(link.countdownSeconds, link.countdownIsLowerBound)}`;
-  if (link.status === 'BEFORE_AOS') return `AOS까지 ${formatCountdown(link.countdownSeconds, link.countdownIsLowerBound)}`;
+  const countdown = formatCountdown(countdownSecondsForLink(link), countdownLowerBoundForLink(link), countdownEstimatedForLink(link));
+  const suffix = countdownSuffixForLink(link);
+  if (link.status === 'IN_CONTACT') return `LOS까지 ${countdown}${suffix}`;
+  if (link.status === 'BEFORE_AOS') return `AOS까지 ${countdown}${suffix}`;
   return '가시권 밖';
 }
 
@@ -431,6 +464,122 @@ function refKey(member: FleetMemberRef) {
   return member.refType === 'catalog' ? `catalog:${member.catalogNumber}` : `custom:${member.customTleId}`;
 }
 
+function precisionCandidateSignature(candidate: ContactPrecisionCandidate) {
+  return [
+    precisionCandidateKey(candidate),
+    candidate.station.latDeg.toFixed(6),
+    candidate.station.lonDeg.toFixed(6),
+    candidate.station.altitudeM.toFixed(1),
+    candidate.station.elevationMaskDeg.toFixed(3),
+    candidate.tle.line1,
+    candidate.tle.line2,
+  ].join('|');
+}
+
+function precisionCandidateKey(candidate: Pick<ContactPrecisionCandidate, 'satelliteId' | 'groundStationId' | 'status'>) {
+  return `${candidate.satelliteId}:${candidate.groundStationId}:${candidate.status}`;
+}
+
+function precisionLinkKey(link: LiveContactLink) {
+  return `${link.satelliteId}:${link.groundStationId}:${link.status}`;
+}
+
+function ensureContactPrecisionWorker() {
+  if (contactPrecisionWorker) return contactPrecisionWorker;
+  contactPrecisionWorker = new Worker(new URL('../workers/contactPrecision.worker.ts', import.meta.url), { type: 'module' });
+  contactPrecisionWorker.onmessage = (event: MessageEvent<ContactPrecisionWorkerResult>) => {
+    if (event.data.requestId !== contactPrecisionRequestId) return;
+    const next = { ...contactPrecisionResults.value };
+    for (const result of event.data.results) {
+      next[precisionCandidateKey(result)] = result;
+    }
+    contactPrecisionResults.value = next;
+    contactPrecisionPendingKeys.value = new Set();
+  };
+  contactPrecisionWorker.onerror = () => {
+    contactPrecisionPendingKeys.value = new Set();
+  };
+  return contactPrecisionWorker;
+}
+
+function refreshFocusedContactPrecision() {
+  const candidates = focusedPrecisionCandidates.value;
+  contactPrecisionRequestId += 1;
+  if (!candidates.length) {
+    contactPrecisionPendingKeys.value = new Set();
+    return;
+  }
+
+  contactPrecisionPendingKeys.value = new Set(candidates.map(precisionCandidateKey));
+  contactPrecisionResults.value = dropExpiredPrecisionResults(candidates);
+  try {
+    ensureContactPrecisionWorker().postMessage({
+      requestId: contactPrecisionRequestId,
+      timestampIso: displayedOrbitTimeIso.value,
+      candidates,
+    });
+  } catch (error) {
+    console.error('Contact precision worker rejected payload', error);
+    contactPrecisionPendingKeys.value = new Set();
+  }
+}
+
+function dropExpiredPrecisionResults(candidates: ContactPrecisionCandidate[]) {
+  const nowMs = displayedOrbitTime.value.getTime();
+  const next = { ...contactPrecisionResults.value };
+  for (const candidate of candidates) {
+    const key = precisionCandidateKey(candidate);
+    const eventMs = next[key]?.eventIso ? new Date(next[key].eventIso).getTime() : Number.NaN;
+    if (Number.isFinite(eventMs) && eventMs <= nowMs) {
+      delete next[key];
+    }
+  }
+  return next;
+}
+
+function contactPrecisionResultFor(link: LiveContactLink) {
+  return contactPrecisionResults.value[precisionLinkKey(link)];
+}
+
+function countdownSecondsForLink(link: LiveContactLink) {
+  const result = contactPrecisionResultFor(link);
+  if (result?.eventIso) return countdownSecondsUntil(result.eventIso);
+  return link.countdownSeconds;
+}
+
+function countdownLowerBoundForLink(link: LiveContactLink) {
+  return contactPrecisionResultFor(link)?.countdownIsLowerBound ?? link.countdownIsLowerBound;
+}
+
+function countdownEstimatedForLink(link: LiveContactLink) {
+  return contactPrecisionResultFor(link)?.eventIso ? false : link.countdownIsEstimated;
+}
+
+function countdownSuffixForLink(link: LiveContactLink) {
+  return contactPrecisionPendingKeys.value.has(precisionLinkKey(link)) ? '(재계산 중)' : '';
+}
+
+function countdownSecondsUntil(eventIso: string) {
+  const eventMs = new Date(eventIso).getTime();
+  const nowMs = displayedOrbitTime.value.getTime();
+  if (!Number.isFinite(eventMs) || !Number.isFinite(nowMs)) return undefined;
+  return Math.max(0, Math.round((eventMs - nowMs) / 1000));
+}
+
+function cloneGroundStationForWorker(station: GroundStation): GroundStation {
+  return {
+    id: station.id,
+    name: station.name,
+    latDeg: station.latDeg,
+    lonDeg: station.lonDeg,
+    altitudeM: station.altitudeM,
+    elevationMaskDeg: station.elevationMaskDeg,
+    elevationMaskSource: station.elevationMaskSource ? { ...station.elevationMaskSource } : undefined,
+    enabled: station.enabled,
+    schemaVersion: station.schemaVersion,
+  };
+}
+
 async function refreshCdmScope() {
   const catalogNumbers = cdmQueryCatalogNumbers.value;
   if (cdmScope.value !== 'all' && !catalogNumbers.length) {
@@ -452,6 +601,14 @@ async function refreshCdmScope() {
     cdmLoading.value = false;
   }
 }
+
+watch(
+  focusedPrecisionRequestKey,
+  () => {
+    refreshFocusedContactPrecision();
+  },
+  { immediate: true },
+);
 
 watch(
   () => [cdmScope.value, cdmQueryCatalogNumbers.value.join(',')] as const,

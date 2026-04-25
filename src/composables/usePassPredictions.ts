@@ -38,6 +38,7 @@ export function usePassPredictions(priorityTarget?: Ref<MapFocusTarget | null>) 
     }
     payload.requestId = activeRequestId + 1;
     activeRequestId = payload.requestId;
+    store.setPassPredictions([]);
     createWorker();
 
     try {

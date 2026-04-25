@@ -46,6 +46,7 @@ describe('buildLiveContactLinks', () => {
     expect(links[0]?.status).toBe('IN_CONTACT');
     expect(links[0]?.elevationDeg).toBeGreaterThanOrEqual(station.elevationMaskDeg);
     expect(links[0]?.countdownSeconds).toBeGreaterThanOrEqual(0);
+    expect(links[0]?.countdownIsEstimated).toBeFalsy();
   });
 
   it('uses the next pass as an AOS countdown before contact', () => {
@@ -90,5 +91,28 @@ describe('buildLiveContactLinks', () => {
 
     expect(links[0]?.status).toBe('IN_CONTACT');
     expect(links[0]?.countdownSeconds).toBeGreaterThan(0);
+    expect(links[0]?.countdownIsEstimated).toBe(true);
+  });
+
+  it('ignores pass predictions computed with a stale station elevation mask', () => {
+    const passes = predictPasses({
+      startTimeIso: '2026-04-23T00:00:00.000Z',
+      hours: 24,
+      stations: [station],
+      satellites: [satellite],
+    });
+    const pass = passes[0];
+    if (!pass) throw new Error('Expected a pass for contact test');
+
+    const links = buildLiveContactLinks({
+      satellites: [satellite],
+      stations: [{ ...station, elevationMaskDeg: station.elevationMaskDeg - 1 }],
+      timestampIso: pass.tca,
+      passPredictions: passes,
+      priorityTarget: { type: 'groundStation', id: station.id },
+    });
+
+    expect(links[0]?.status).toBe('IN_CONTACT');
+    expect(links[0]?.countdownIsEstimated).toBe(true);
   });
 });
