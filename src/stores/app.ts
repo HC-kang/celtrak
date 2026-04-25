@@ -43,6 +43,8 @@ export const useAppStore = defineStore('app', () => {
   const preferences = ref<UserPreferences>(loadPreferences());
   const loading = ref(false);
   const loadingMessage = ref('데이터 동기화 준비 중');
+  const catalogIndexLoading = ref(false);
+  const catalogIndexLoaded = ref(false);
   const offline = ref(typeof navigator !== 'undefined' ? !navigator.onLine : false);
   const updateAvailable = ref(false);
   const updateCallback = ref<(() => Promise<void>) | null>(null);
@@ -115,27 +117,21 @@ export const useAppStore = defineStore('app', () => {
   });
 
   watch(selectedFleetId, async () => {
+    await hydrateSelectedFleetCatalog();
     await hydrateOpsStatuses();
   });
 
   async function bootstrap() {
     loading.value = true;
-    loadingMessage.value = 'CelesTrak 카탈로그와 우주환경 데이터를 불러오는 중';
+    loadingMessage.value = '로컬 워크스페이스와 플릿 데이터를 준비하는 중';
     try {
-      const [catalogData, weatherData, conjunctionData, decayData, alertsData] = await Promise.all([
-        gateway.getCatalog(),
+      const remoteSignals = Promise.all([
         gateway.getWeather(),
         gateway.getConjunctions(),
         gateway.getDecayPredictions(),
         gateway.getAlerts(),
       ]);
-      catalog.value = catalogData;
-      weather.value = weatherData;
-      conjunctions.value = conjunctionData;
-      decayPredictions.value = decayData;
-      alerts.value = alertsData;
 
-      loadingMessage.value = '로컬 워크스페이스와 플릿 데이터를 준비하는 중';
       fleets.value = await fleetStore.listFleets();
       customTles.value = await fleetStore.listCustomTLEs();
       groundStations.value = await fleetStore.listGroundStations();
@@ -166,6 +162,14 @@ export const useAppStore = defineStore('app', () => {
       }
 
       selectedFleetId.value = selectedFleet.value?.id ?? null;
+      loadingMessage.value = '선택 플릿 궤도 데이터를 불러오는 중';
+      await hydrateSelectedFleetCatalog();
+      const [weatherData, conjunctionData, decayData, alertsData] = await remoteSignals;
+      weather.value = weatherData;
+      conjunctions.value = conjunctionData;
+      decayPredictions.value = decayData;
+      alerts.value = alertsData;
+
       loadingMessage.value = '선택 플릿 상태와 지상국 설정을 적용하는 중';
       await hydrateOpsStatuses();
       if (!preferences.value.defaultGroundStationId && groundStations.value[0]) {
@@ -187,6 +191,36 @@ export const useAppStore = defineStore('app', () => {
     opsStatuses.value = next;
   }
 
+  async function hydrateSelectedFleetCatalog() {
+    const catalogNumbers = selectedFleetCatalogNumbers.value.filter(
+      (catalogNumber) => !catalog.value.some((entry) => entry.satcat.catalogNumber === catalogNumber),
+    );
+    if (!catalogNumbers.length) return;
+    const entries = await gateway.getCatalog({ catalogNumbers });
+    mergeCatalogEntries(entries);
+  }
+
+  async function loadCatalogIndex() {
+    if (catalogIndexLoaded.value || catalogIndexLoading.value) return;
+    catalogIndexLoading.value = true;
+    try {
+      const entries = await gateway.getCatalog({ group: 'active', limit: 20_000 });
+      mergeCatalogEntries(entries);
+      catalogIndexLoaded.value = true;
+    } finally {
+      catalogIndexLoading.value = false;
+    }
+  }
+
+  function mergeCatalogEntries(entries: CatalogEntry[]) {
+    if (!entries.length) return;
+    const byCatalogNumber = new Map(catalog.value.map((entry) => [entry.satcat.catalogNumber, entry]));
+    for (const entry of entries) {
+      byCatalogNumber.set(entry.satcat.catalogNumber, entry);
+    }
+    catalog.value = [...byCatalogNumber.values()];
+  }
+
   async function addCatalogToFleet(entry: CatalogEntry, fleetId = selectedFleet.value?.id) {
     const fleet = fleets.value.find((item) => item.id === fleetId);
     if (!fleet) return;
@@ -204,6 +238,7 @@ export const useAppStore = defineStore('app', () => {
     };
     await fleetStore.upsertFleet(nextFleet);
     fleets.value = await fleetStore.listFleets();
+    mergeCatalogEntries([entry]);
     await hydrateOpsStatuses();
   }
 
@@ -226,11 +261,13 @@ export const useAppStore = defineStore('app', () => {
     await fleetStore.deleteFleet(id);
     fleets.value = await fleetStore.listFleets();
     selectedFleetId.value = fleets.value[0]?.id ?? null;
+    await hydrateSelectedFleetCatalog();
     await hydrateOpsStatuses();
   }
 
   async function selectFleet(id: string) {
     selectedFleetId.value = id;
+    await hydrateSelectedFleetCatalog();
     await hydrateOpsStatuses();
   }
 
@@ -357,6 +394,7 @@ export const useAppStore = defineStore('app', () => {
     groundStations.value = await fleetStore.listGroundStations();
     anomalies.value = await fleetStore.listAnomalies({});
     events.value = await fleetStore.listEvents(nowIso(), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString());
+    await hydrateSelectedFleetCatalog();
     await hydrateOpsStatuses();
     return report;
   }
@@ -452,6 +490,8 @@ export const useAppStore = defineStore('app', () => {
     applyUpdate,
     bootstrap,
     catalog,
+    catalogIndexLoaded,
+    catalogIndexLoading,
     conjunctions,
     createFleet,
     customTles,
@@ -476,6 +516,7 @@ export const useAppStore = defineStore('app', () => {
     closeAnomaly,
     addCustomTleToFleet,
     latestStatusFor,
+    loadCatalogIndex,
     logAnomaly,
     logOperationalStatus,
     offline,
