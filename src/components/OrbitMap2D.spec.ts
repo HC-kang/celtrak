@@ -90,6 +90,22 @@ describe('OrbitMap2D', () => {
     expect(wrapper.emitted('focus-target')?.[1]).toEqual([{ type: 'satellite', id: 'catalog:25544' }]);
   });
 
+  it('batches high-density satellite rendering into a canvas layer', () => {
+    const satellites = Array.from({ length: 24 }, (_, index) => cloneCatalogEntry(25544 + index));
+    const wrapper = mount(OrbitMap2D, {
+      props: {
+        satellites,
+        groundStations: [station],
+        contactLinks: [],
+        orbitMode: 'live',
+        orbitTimeIso: '2026-04-25T00:00:00.000Z',
+      },
+    });
+
+    expect(wrapper.find('.orbit-map__dynamic-canvas').exists()).toBe(true);
+    expect(wrapper.find('.orbit-map__track').exists()).toBe(false);
+  });
+
   it('includes satellite label rectangles in map hit testing', async () => {
     const wrapper = mount(OrbitMap2D, {
       props: {
@@ -185,5 +201,16 @@ function projectMapPoint(lon: number, lat: number) {
   return {
     x: ((lon + 180) / 360) * mapSize,
     y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * mapSize,
+  };
+}
+
+function cloneCatalogEntry(catalogNumber: number): CatalogEntry {
+  return {
+    ...satelliteEntry,
+    satcat: {
+      ...satelliteEntry.satcat,
+      catalogNumber,
+      objectName: `SAT ${catalogNumber}`,
+    },
   };
 }

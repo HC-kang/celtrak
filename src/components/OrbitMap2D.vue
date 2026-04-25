@@ -28,11 +28,13 @@ const MAX_ZOOM = 8;
 const TRAIL_START_MINUTES = -45;
 const TRAIL_END_MINUTES = 120;
 const FOCUS_ANIMATION_MS = 560;
+const CANVAS_DYNAMIC_LAYER_THRESHOLD = 20;
 const TRACK_COLORS = ['#0070cc', '#1eaedb', '#53b1ff', '#ffffff', '#d53b00', '#1883fd'];
 type SatRec = ReturnType<typeof satellite.twoline2satrec>;
 
 const mapShell = ref<HTMLDivElement | null>(null);
 const svgElement = ref<SVGSVGElement | null>(null);
+const dynamicCanvas = ref<HTMLCanvasElement | null>(null);
 const viewportSize = ref({ width: MAP_WIDTH, height: MAP_HEIGHT });
 const zoom = ref(1);
 const center = ref({ x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 });
@@ -43,6 +45,7 @@ let dragState: DragState | null = null;
 let pinchState: PinchState | null = null;
 let pointerDownSnapshot: PointerDownSnapshot | null = null;
 let focusAnimationFrame = 0;
+let canvasDrawFrame = 0;
 const activePointers = new Map<number, PointerSnapshot>();
 
 onMounted(() => {
@@ -52,9 +55,11 @@ onMounted(() => {
       width: Math.max(entry.contentRect.width, 1),
       height: Math.max(entry.contentRect.height, 1),
     };
+    queueDynamicCanvasDraw();
     if (!userMovedMap.value) {
       zoom.value = coverZoom.value;
       center.value = clampCenter(center.value.x, center.value.y, zoom.value);
+      queueDynamicCanvasDraw();
     }
   });
   if (mapShell.value) {
@@ -65,6 +70,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   cancelFocusAnimation();
+  cancelDynamicCanvasDraw();
   resizeObserver?.disconnect();
 });
 
@@ -113,6 +119,13 @@ const mapViewBox = computed(() => {
   return `${view.x.toFixed(2)} ${view.y.toFixed(2)} ${view.width.toFixed(2)} ${view.height.toFixed(2)}`;
 });
 const zoomPercent = computed(() => `${zoom.value.toFixed(1)}x`);
+const usesCanvasDynamicLayer = computed(() => plotted.value.length > CANVAS_DYNAMIC_LAYER_THRESHOLD);
+const trailStepMinutes = computed(() => {
+  if (props.dataSaver) return 10;
+  if (props.satellites.length > 80) return 12;
+  if (props.satellites.length > CANVAS_DYNAMIC_LAYER_THRESHOLD) return 6;
+  return 2;
+});
 
 const plotted = computed(() =>
   props.satellites
@@ -215,7 +228,7 @@ function projectSatrec(satrec: SatRec, timestamp: Date) {
 
 function buildTrail(satrec: SatRec, base: Date) {
   const points: MapPoint[] = [];
-  const stepMinutes = props.dataSaver ? 6 : 2;
+  const stepMinutes = trailStepMinutes.value;
   for (let offset = TRAIL_START_MINUTES; offset <= TRAIL_END_MINUTES; offset += stepMinutes) {
     const projected = projectSatrec(satrec, new Date(base.getTime() + offset * 60 * 1000));
     if (!projected) continue;
@@ -251,6 +264,7 @@ function resetMapView() {
   userMovedMap.value = false;
   zoom.value = coverZoom.value;
   center.value = { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 };
+  queueDynamicCanvasDraw();
 }
 
 function onWheel(event: WheelEvent) {
@@ -309,6 +323,7 @@ function onPointerMove(event: PointerEvent) {
   const dx = ((event.clientX - dragState.startClientX) / viewportSize.value.width) * dragState.viewWidth;
   const dy = ((event.clientY - dragState.startClientY) / viewportSize.value.height) * dragState.viewHeight;
   center.value = clampCenter(dragState.startCenterX - dx, dragState.startCenterY - dy, zoom.value);
+  queueDynamicCanvasDraw();
 }
 
 function onPointerUp(event: PointerEvent) {
@@ -343,6 +358,7 @@ function setZoom(nextZoom: number, anchor?: MapPoint) {
   if (!anchor) {
     zoom.value = clampedZoom;
     center.value = clampCenter(center.value.x, center.value.y, clampedZoom);
+    queueDynamicCanvasDraw();
     return;
   }
 
@@ -355,10 +371,12 @@ function setZoom(nextZoom: number, anchor?: MapPoint) {
   const nextY = anchor.y - ratioY * nextHeight;
   zoom.value = clampedZoom;
   center.value = clampCenter(nextX + nextWidth / 2, nextY + nextHeight / 2, clampedZoom);
+  queueDynamicCanvasDraw();
 }
 
 function panBy(deltaX: number, deltaY: number) {
   center.value = clampCenter(center.value.x + deltaX, center.value.y + deltaY, zoom.value);
+  queueDynamicCanvasDraw();
 }
 
 function beginDrag(pointerId: number, clientX: number, clientY: number) {
@@ -401,6 +419,7 @@ function updatePinch() {
   const deltaX = ((nextMidpoint.x - pinchState.lastMidpoint.x) / viewportSize.value.width) * view.width;
   const deltaY = ((nextMidpoint.y - pinchState.lastMidpoint.y) / viewportSize.value.height) * view.height;
   center.value = clampCenter(center.value.x - deltaX, center.value.y - deltaY, zoom.value);
+  queueDynamicCanvasDraw();
 
   pinchState = {
     lastDistance: nextDistance,
@@ -647,11 +666,284 @@ function centerMapOnTarget(target: MapFocusTarget | null | undefined) {
   userMovedMap.value = true;
 }
 
+function queueDynamicCanvasDraw() {
+  if (!usesCanvasDynamicLayer.value) return;
+  if (canvasDrawFrame) return;
+  canvasDrawFrame = requestAnimationFrame(() => {
+    canvasDrawFrame = 0;
+    drawDynamicCanvasLayer();
+  });
+}
+
+function cancelDynamicCanvasDraw() {
+  if (!canvasDrawFrame) return;
+  cancelAnimationFrame(canvasDrawFrame);
+  canvasDrawFrame = 0;
+}
+
+function drawDynamicCanvasLayer() {
+  const canvas = dynamicCanvas.value;
+  if (!usesCanvasDynamicLayer.value || !canvas) return;
+  const bounds = canvas.getBoundingClientRect();
+  const width = Math.max(Math.round(bounds.width || viewportSize.value.width), 1);
+  const height = Math.max(Math.round(bounds.height || viewportSize.value.height), 1);
+  const dpr = Math.min(window.devicePixelRatio || 1, props.dataSaver ? 1.25 : 2);
+  const pixelWidth = Math.max(Math.round(width * dpr), 1);
+  const pixelHeight = Math.max(Math.round(height * dpr), 1);
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  const context = canvas.getContext('2d');
+  if (!context) return;
+
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, width, height);
+  const metrics = { view: currentView.value, width, height };
+
+  drawCanvasTrails(context, metrics);
+  drawCanvasContacts(context, metrics);
+  drawCanvasStations(context, metrics);
+  drawCanvasSatellites(context, metrics);
+}
+
+function drawCanvasTrails(context: CanvasRenderingContext2D, metrics: CanvasMetrics) {
+  context.save();
+  context.lineWidth = plotted.value.length > 80 ? 1.4 : 2.1;
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+  context.setLineDash(plotted.value.length > 48 ? [1, 11] : [1, 9]);
+  context.globalAlpha = plotted.value.length > 80 ? 0.42 : 0.62;
+  for (const world of visibleWorlds.value) {
+    for (const item of plotted.value) {
+      context.strokeStyle = item.color;
+      for (const segment of item.trailSegments) {
+        strokeSmoothCanvasPath(context, segment, world.offset, metrics);
+      }
+    }
+  }
+  context.restore();
+}
+
+function drawCanvasContacts(context: CanvasRenderingContext2D, metrics: CanvasMetrics) {
+  context.save();
+  context.lineCap = 'round';
+  context.font = '700 10px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  for (const world of visibleWorlds.value) {
+    for (const segment of activeContactSegments.value) {
+      const endpoints = contactEndpoints(segment, world.offset);
+      if (!lineIntersectsView(endpoints.station, endpoints.satellite, metrics)) continue;
+      const start = mapToCanvasPoint(endpoints.station, metrics);
+      const end = mapToCanvasPoint(endpoints.satellite, metrics);
+      context.beginPath();
+      context.moveTo(start.x, start.y);
+      context.lineTo(end.x, end.y);
+      context.strokeStyle = segment.focused ? '#ffffff' : 'rgba(30, 174, 219, 0.76)';
+      context.lineWidth = segment.focused ? 3.2 : 2;
+      context.setLineDash(segment.focused ? [] : [8, 8]);
+      context.shadowColor = 'rgba(30, 174, 219, 0.44)';
+      context.shadowBlur = 8;
+      context.stroke();
+
+      const labelPoint = contactLabelPoint(segment, world.offset);
+      const label = mapToCanvasPoint(labelPoint, metrics);
+      context.shadowBlur = 0;
+      context.fillStyle = 'rgba(0, 0, 0, 0.72)';
+      context.fillRect(label.x - 30, label.y - 10, 60, 18);
+      context.fillStyle = '#ffffff';
+      context.fillText(linkLabel(segment.link), label.x, label.y);
+    }
+  }
+  context.restore();
+}
+
+function drawCanvasStations(context: CanvasRenderingContext2D, metrics: CanvasMetrics) {
+  context.save();
+  context.font = '700 11px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  context.textBaseline = 'middle';
+  for (const world of visibleWorlds.value) {
+    for (const station of stationPoints.value) {
+      const point = { ...station, x: station.x + world.offset };
+      if (!pointInExpandedView(point, metrics, 36)) continue;
+      const screen = mapToCanvasPoint(point, metrics);
+      const focused = targetMatches(props.focusedTarget, { type: 'groundStation', id: station.id });
+      context.beginPath();
+      context.arc(screen.x, screen.y, 24, 0, Math.PI * 2);
+      context.strokeStyle = focused ? 'rgba(255, 255, 255, 0.7)' : 'rgba(30, 174, 219, 0.34)';
+      context.lineWidth = focused ? 2.2 : 1.4;
+      context.stroke();
+      context.beginPath();
+      context.arc(screen.x, screen.y, focused ? 8 : 6, 0, Math.PI * 2);
+      context.fillStyle = focused ? '#ffffff' : '#1eaedb';
+      context.shadowColor = 'rgba(30, 174, 219, 0.7)';
+      context.shadowBlur = 9;
+      context.fill();
+      context.shadowBlur = 0;
+      context.textAlign = station.labelAnchor === 'start' ? 'left' : 'right';
+      context.fillStyle = 'rgba(255, 255, 255, 0.88)';
+      context.strokeStyle = 'rgba(0, 0, 0, 0.84)';
+      context.lineWidth = 3;
+      const labelX = screen.x + (station.labelAnchor === 'start' ? 14 : -14);
+      const labelY = screen.y - 13;
+      context.strokeText(station.name, labelX, labelY);
+      context.fillText(station.name, labelX, labelY);
+    }
+  }
+  context.restore();
+}
+
+function drawCanvasSatellites(context: CanvasRenderingContext2D, metrics: CanvasMetrics) {
+  const shouldLabelAll = plotted.value.length <= 44;
+  context.save();
+  for (const world of visibleWorlds.value) {
+    plotted.value.forEach((item, index) => {
+      const point = { ...item.point, x: item.point.x + world.offset };
+      if (!pointInExpandedView(point, metrics, 42)) return;
+      const focused = targetMatches(props.focusedTarget, { type: 'satellite', id: item.id });
+      const screen = mapToCanvasPoint(point, metrics);
+      context.beginPath();
+      context.arc(screen.x, screen.y, focused ? 21 : 16, 0, Math.PI * 2);
+      context.strokeStyle = item.color;
+      context.lineWidth = focused ? 3.2 : 1.7;
+      context.globalAlpha = focused ? 0.72 : 0.38;
+      context.stroke();
+      context.globalAlpha = 1;
+      context.beginPath();
+      context.arc(screen.x, screen.y, focused ? 7.8 : 5.8, 0, Math.PI * 2);
+      context.fillStyle = item.color;
+      context.shadowColor = item.color;
+      context.shadowBlur = focused ? 13 : 8;
+      context.fill();
+      context.shadowBlur = 0;
+
+      if (focused || shouldLabelAll || index < 12) {
+        drawCanvasSatelliteLabel(context, item, world.offset, metrics, focused);
+      }
+    });
+  }
+  context.restore();
+}
+
+function drawCanvasSatelliteLabel(
+  context: CanvasRenderingContext2D,
+  item: (typeof plotted.value)[number],
+  worldOffset: number,
+  metrics: CanvasMetrics,
+  focused: boolean,
+) {
+  const bounds = {
+    ...item.labelBounds,
+    x: item.labelBounds.x + worldOffset,
+  };
+  if (!rectIntersectsView(bounds, metrics)) return;
+  const topLeft = mapToCanvasPoint(bounds, metrics);
+  const width = (bounds.width / metrics.view.width) * metrics.width;
+  const height = (bounds.height / metrics.view.height) * metrics.height;
+  context.save();
+  context.fillStyle = focused ? 'rgba(0, 0, 0, 0.84)' : 'rgba(0, 0, 0, 0.68)';
+  context.strokeStyle = focused ? '#ffffff' : 'rgba(255, 255, 255, 0.18)';
+  context.lineWidth = focused ? 2 : 1;
+  drawRoundedRect(context, topLeft.x, topLeft.y, width, height, Math.min(12, height / 2));
+  context.fill();
+  context.stroke();
+  context.font = '700 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  context.textAlign = 'left';
+  context.textBaseline = 'middle';
+  context.fillStyle = '#f8fafc';
+  context.fillText(item.label, topLeft.x + 12, topLeft.y + 16);
+  context.font = '500 10px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  context.fillStyle = 'rgba(203, 213, 225, 0.86)';
+  context.fillText(`${formatCoordinate(item.geo.lat, 'lat')} · ${formatCoordinate(item.geo.lon, 'lon')}`, topLeft.x + 12, topLeft.y + 30);
+  context.restore();
+}
+
+function strokeSmoothCanvasPath(context: CanvasRenderingContext2D, points: MapPoint[], worldOffset: number, metrics: CanvasMetrics) {
+  const shifted = points.map((point) => ({ x: point.x + worldOffset, y: point.y }));
+  if (!polylineIntersectsView(shifted, metrics)) return;
+  if (!shifted.length) return;
+  const first = mapToCanvasPoint(shifted[0], metrics);
+  context.beginPath();
+  context.moveTo(first.x, first.y);
+  if (shifted.length === 1) {
+    context.stroke();
+    return;
+  }
+  if (shifted.length === 2) {
+    const second = mapToCanvasPoint(shifted[1], metrics);
+    context.lineTo(second.x, second.y);
+    context.stroke();
+    return;
+  }
+  for (let index = 0; index < shifted.length - 1; index += 1) {
+    const p0 = shifted[Math.max(index - 1, 0)];
+    const p1 = shifted[index];
+    const p2 = shifted[index + 1];
+    const p3 = shifted[Math.min(index + 2, shifted.length - 1)];
+    const c1 = mapToCanvasPoint({ x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 }, metrics);
+    const c2 = mapToCanvasPoint({ x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 }, metrics);
+    const end = mapToCanvasPoint(p2, metrics);
+    context.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, end.x, end.y);
+  }
+  context.stroke();
+}
+
+function drawRoundedRect(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+}
+
+function mapToCanvasPoint(point: MapPoint, metrics: CanvasMetrics) {
+  return {
+    x: ((point.x - metrics.view.x) / metrics.view.width) * metrics.width,
+    y: ((point.y - metrics.view.y) / metrics.view.height) * metrics.height,
+  };
+}
+
+function pointInExpandedView(point: MapPoint, metrics: CanvasMetrics, paddingPx: number) {
+  const paddingX = (paddingPx / metrics.width) * metrics.view.width;
+  const paddingY = (paddingPx / metrics.height) * metrics.view.height;
+  return (
+    point.x >= metrics.view.x - paddingX &&
+    point.x <= metrics.view.x + metrics.view.width + paddingX &&
+    point.y >= metrics.view.y - paddingY &&
+    point.y <= metrics.view.y + metrics.view.height + paddingY
+  );
+}
+
+function rectIntersectsView(rect: MapBounds, metrics: CanvasMetrics) {
+  return (
+    rect.x + rect.width >= metrics.view.x &&
+    rect.x <= metrics.view.x + metrics.view.width &&
+    rect.y + rect.height >= metrics.view.y &&
+    rect.y <= metrics.view.y + metrics.view.height
+  );
+}
+
+function polylineIntersectsView(points: MapPoint[], metrics: CanvasMetrics) {
+  return points.some((point) => pointInExpandedView(point, metrics, 24));
+}
+
+function lineIntersectsView(start: MapPoint, end: MapPoint, metrics: CanvasMetrics) {
+  return pointInExpandedView(start, metrics, 24) || pointInExpandedView(end, metrics, 24);
+}
+
 function animateMapFocus(targetCenter: MapPoint, targetZoom: number) {
   cancelFocusAnimation();
   if (prefersReducedMotion()) {
     zoom.value = targetZoom;
     center.value = targetCenter;
+    queueDynamicCanvasDraw();
     return;
   }
 
@@ -664,6 +956,7 @@ function animateMapFocus(targetCenter: MapPoint, targetZoom: number) {
     const eased = easeOutCubic(progress);
     zoom.value = lerp(startZoom, targetZoom, eased);
     center.value = clampCenter(lerp(startCenter.x, targetCenter.x, eased), lerp(startCenter.y, targetCenter.y, eased), zoom.value);
+    queueDynamicCanvasDraw();
 
     if (progress < 1) {
       focusAnimationFrame = requestAnimationFrame(step);
@@ -672,6 +965,7 @@ function animateMapFocus(targetCenter: MapPoint, targetZoom: number) {
     focusAnimationFrame = 0;
     zoom.value = targetZoom;
     center.value = targetCenter;
+    queueDynamicCanvasDraw();
   };
 
   focusAnimationFrame = requestAnimationFrame(step);
@@ -726,6 +1020,17 @@ interface MapBounds extends MapPoint {
   height: number;
 }
 
+interface CanvasMetrics {
+  view: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  width: number;
+  height: number;
+}
+
 interface OsmTile {
   id: string;
   href: string;
@@ -769,6 +1074,20 @@ interface PinchState {
   lastDistance: number;
   lastMidpoint: PointerSnapshot;
 }
+
+watch(
+  () => [
+    plotted.value,
+    stationPoints.value,
+    activeContactSegments.value,
+    currentView.value,
+    visibleWorlds.value,
+    props.focusedTarget,
+    usesCanvasDynamicLayer.value,
+  ],
+  () => queueDynamicCanvasDraw(),
+  { deep: true, flush: 'post' },
+);
 
 watch(
   () => props.focusedTarget,
@@ -881,7 +1200,7 @@ watch(
         <path class="orbit-map__night-mask" :d="nightMaskPath" />
       </g>
 
-      <g class="orbit-map__contact-links">
+      <g v-if="!usesCanvasDynamicLayer" class="orbit-map__contact-links">
         <g
           v-for="world in visibleWorlds"
           :key="`contact-world-${world.id}`"
@@ -903,7 +1222,7 @@ watch(
         </g>
       </g>
 
-      <g class="orbit-map__stations">
+      <g v-if="!usesCanvasDynamicLayer" class="orbit-map__stations">
         <g
           v-for="world in visibleWorlds"
           :key="`station-world-${world.id}`"
@@ -933,6 +1252,7 @@ watch(
       </g>
 
       <g
+        v-if="!usesCanvasDynamicLayer"
         v-for="world in visibleWorlds"
         :key="`track-world-${world.id}`"
         :transform="`translate(${world.offset} 0)`"
@@ -965,6 +1285,12 @@ watch(
         </g>
       </g>
     </svg>
+    <canvas
+      v-if="usesCanvasDynamicLayer"
+      ref="dynamicCanvas"
+      class="orbit-map__dynamic-canvas"
+      aria-hidden="true"
+    ></canvas>
 
     <div class="orbit-map__interaction-hint">Wheel/Pinch zoom · Drag pan · Shift+wheel pan</div>
     <a
