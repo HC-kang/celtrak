@@ -361,6 +361,14 @@ function toggleFocusedStation(station: GroundStation, enabled: boolean) {
   void store.toggleGroundStation(station.id, enabled);
 }
 
+function setAllGroundStations(enabled: boolean) {
+  void Promise.all(
+    store.groundStations
+      .filter((station) => station.enabled !== enabled)
+      .map((station) => store.toggleGroundStation(station.id, enabled)),
+  );
+}
+
 function refKey(member: FleetMemberRef) {
   return member.refType === 'catalog' ? `catalog:${member.catalogNumber}` : `custom:${member.customTleId}`;
 }
@@ -548,36 +556,6 @@ function refKey(member: FleetMemberRef) {
             </template>
 
             <div class="focus-inspector__section">
-              <div class="focus-inspector__section-heading">
-                <span>Ground Stations</span>
-                <small>{{ enabledGroundStationCount }}/{{ store.groundStations.length }} selected</small>
-              </div>
-              <div class="focus-inspector__station-list">
-                <article
-                  v-for="station in store.groundStations"
-                  :key="station.id"
-                  class="focus-inspector__station-toggle"
-                  :class="{ 'focus-inspector__station-toggle--active': station.enabled }"
-                >
-                  <label>
-                    <input
-                      :checked="station.enabled"
-                      type="checkbox"
-                      @change="toggleFocusedStation(station, ($event.target as HTMLInputElement).checked)"
-                    />
-                    <span>
-                      <strong>{{ station.name }}</strong>
-                      <small>{{ station.elevationMaskDeg }}° mask</small>
-                    </span>
-                  </label>
-                  <button class="button button--ghost panel-card__action-link" type="button" @click="setFocusedTarget({ type: 'groundStation', id: station.id })">
-                    보기
-                  </button>
-                </article>
-              </div>
-            </div>
-
-            <div class="focus-inspector__section">
               <span>Contact Windows</span>
               <article v-for="link in focusedLinks" :key="`${link.satelliteId}-${link.groundStationId}`" class="focus-inspector__row" :class="`focus-inspector__row--${link.status.toLowerCase().replace('_', '-')}`">
                 <div>
@@ -600,38 +578,38 @@ function refKey(member: FleetMemberRef) {
             </div>
           </section>
 
-          <section class="war-room__side-card">
+          <section class="war-room__side-card ground-station-control">
             <div class="war-room__side-header">
-              <p class="eyebrow">Live Intel Queue</p>
-              <strong>{{ intelQueue.length }} signals</strong>
+              <div>
+                <p class="eyebrow">Ground Stations</p>
+                <strong>{{ enabledGroundStationCount }}/{{ store.groundStations.length }} selected</strong>
+              </div>
+              <div class="ground-station-control__actions">
+                <button class="button button--ghost panel-card__action-link" type="button" @click="setAllGroundStations(true)">모두선택</button>
+                <button class="button button--ghost panel-card__action-link" type="button" @click="setAllGroundStations(false)">모두해제</button>
+              </div>
             </div>
-            <div class="war-room__feed">
-              <article v-for="item in intelQueue" :key="item.id" class="war-room__feed-item" :class="`war-room__feed-item--${item.tone}`">
-                <div>
-                  <span>{{ item.kicker }}</span>
-                  <strong>{{ item.title }}</strong>
-                  <p>{{ item.detail }}</p>
-                </div>
-                <small>{{ item.time }}</small>
-              </article>
-            </div>
-          </section>
-
-          <section class="war-room__side-card">
-            <div class="war-room__side-header">
-              <p class="eyebrow">Map Layers</p>
-              <strong>{{ activeLayers.filter((layer) => layer.active).length }}/{{ activeLayers.length }}</strong>
-            </div>
-            <div class="war-room__layers" aria-label="Current map layer status">
+            <div class="focus-inspector__station-list focus-inspector__station-list--expanded">
               <article
-                v-for="layer in activeLayers"
-                :key="layer.label"
-                class="war-room__layer"
-                :class="{ 'war-room__layer--active': layer.active }"
+                v-for="station in store.groundStations"
+                :key="station.id"
+                class="focus-inspector__station-toggle"
+                :class="{ 'focus-inspector__station-toggle--active': station.enabled }"
               >
-                <span></span>
-                <strong>{{ layer.label }}</strong>
-                <small>{{ layer.detail }}</small>
+                <label>
+                  <input
+                    :checked="station.enabled"
+                    type="checkbox"
+                    @change="toggleFocusedStation(station, ($event.target as HTMLInputElement).checked)"
+                  />
+                  <span>
+                    <strong>{{ station.name }}</strong>
+                    <small>{{ station.latDeg.toFixed(2) }}, {{ station.lonDeg.toFixed(2) }} · {{ station.elevationMaskDeg }}° mask</small>
+                  </span>
+                </label>
+                <button class="button button--ghost panel-card__action-link" type="button" @click="setFocusedTarget({ type: 'groundStation', id: station.id })">
+                  보기
+                </button>
               </article>
             </div>
           </section>
@@ -640,6 +618,40 @@ function refKey(member: FleetMemberRef) {
     </section>
 
     <div class="briefing-grid">
+    <PanelCard class="briefing-grid__half" title="Live Intel Queue" subtitle="Passive signals">
+      <template #actions>
+        <strong class="panel-card__action-link">{{ intelQueue.length }} signals</strong>
+      </template>
+      <div class="war-room__feed">
+        <article v-for="item in intelQueue" :key="item.id" class="war-room__feed-item" :class="`war-room__feed-item--${item.tone}`">
+          <div>
+            <span>{{ item.kicker }}</span>
+            <strong>{{ item.title }}</strong>
+            <p>{{ item.detail }}</p>
+          </div>
+          <small>{{ item.time }}</small>
+        </article>
+      </div>
+    </PanelCard>
+
+    <PanelCard class="briefing-grid__half" title="Map Layers" subtitle="Passive layer status">
+      <template #actions>
+        <strong class="panel-card__action-link">{{ activeLayers.filter((layer) => layer.active).length }}/{{ activeLayers.length }}</strong>
+      </template>
+      <div class="war-room__layers" aria-label="Current map layer status">
+        <article
+          v-for="layer in activeLayers"
+          :key="layer.label"
+          class="war-room__layer"
+          :class="{ 'war-room__layer--active': layer.active }"
+        >
+          <span></span>
+          <strong>{{ layer.label }}</strong>
+          <small>{{ layer.detail }}</small>
+        </article>
+      </div>
+    </PanelCard>
+
     <PanelCard title="Operator Readiness" subtitle="USER-entered mission status">
       <template #actions>
         <OriginBadge v-if="store.fleetHealth.latestRecordedAt" origin="USER" :timestamp="store.fleetHealth.latestRecordedAt" />

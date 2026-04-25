@@ -661,7 +661,7 @@ interface PinchState {
         <path v-for="y in latitudeLines" :key="`lat-${y}`" :d="`M 0 ${y} H ${MAP_WIDTH}`" />
       </g>
 
-      <path class="orbit-map__night-mask" :d="nightMaskPath" fill-rule="evenodd" />
+      <path class="orbit-map__night-mask" :d="nightMaskPath" />
 
       <g class="orbit-map__contact-links">
         <g

@@ -9,7 +9,9 @@ describe('solarTerminator', () => {
 
   it('draws the night mask with smooth terminator curves', () => {
     const path = createNightMaskPath(new Date('2026-04-25T12:00:00.000Z'), 1024, 1024);
+    expect(path.length).toBeGreaterThan(1000);
     expect(path).toContain(' C ');
+    expect(path).not.toContain('NaN');
   });
 
   it('moves the subsolar longitude as time advances', () => {

@@ -59,6 +59,8 @@ describe('OrbitMap2D', () => {
     });
 
     const initialPath = wrapper.find('.orbit-map__night-mask').attributes('d');
+    expect(initialPath?.length).toBeGreaterThan(1000);
+    expect(wrapper.find('.orbit-map__night-mask').attributes('fill-rule')).toBeUndefined();
     await wrapper.setProps({ orbitTimeIso: '2026-04-25T06:00:00.000Z' });
 
     expect(wrapper.find('.orbit-map__night-mask').attributes('d')).not.toBe(initialPath);
