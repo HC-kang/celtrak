@@ -34,6 +34,7 @@ describe('predictPasses', () => {
 
     expect(passes.length).toBeGreaterThan(0);
     expect(new Date(passes[0].aos).getTime()).toBeGreaterThanOrEqual(new Date(startTimeIso).getTime());
+    expect(passes[0].elevationMaskDeg).toBe(10);
   });
 
   it('keeps pass windows across all enabled station pairs', () => {

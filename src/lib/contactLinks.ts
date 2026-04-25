@@ -34,7 +34,7 @@ export function buildLiveContactLinks(input: {
       const look = createLookSnapshot(satrec, station, new Date(timestampMs));
       if (!look) continue;
 
-      const pairPasses = passMap.get(`${satelliteId}:${station.id}`) ?? [];
+      const pairPasses = (passMap.get(`${satelliteId}:${station.id}`) ?? []).filter((pass) => passMatchesStationMask(pass, station));
       const activePass = pairPasses.find((pass) => new Date(pass.aos).getTime() <= timestampMs && timestampMs <= new Date(pass.los).getTime());
       const nextPass = pairPasses.find((pass) => new Date(pass.aos).getTime() > timestampMs);
       const visible = look.elevationDeg >= station.elevationMaskDeg;
@@ -67,6 +67,7 @@ export function buildLiveContactLinks(input: {
           tca: activePass?.tca,
           los: activePass?.los,
           countdownSeconds: activePass ? secondsBetween(timestampMs, activePass.los) : fallbackCountdown?.seconds,
+          countdownIsEstimated: !activePass && Boolean(fallbackCountdown),
           countdownIsLowerBound: activePass?.losIsPredictionHorizon || fallbackCountdown?.isLowerBound || undefined,
         });
         continue;
@@ -110,6 +111,7 @@ export function buildLiveContactLinks(input: {
         azimuthDeg: look.azimuthDeg,
         status: fallbackCountdown ? 'BEFORE_AOS' : 'AFTER_LOS',
         countdownSeconds: fallbackCountdown?.seconds,
+        countdownIsEstimated: Boolean(fallbackCountdown),
         countdownIsLowerBound: fallbackCountdown?.isLowerBound || undefined,
       });
     }
@@ -167,6 +169,10 @@ function indexPassPredictions(passPredictions: PassPrediction[]) {
     passes.sort((left, right) => left.aos.localeCompare(right.aos));
   }
   return map;
+}
+
+function passMatchesStationMask(pass: PassPrediction, station: GroundStation) {
+  return Math.abs(pass.elevationMaskDeg - station.elevationMaskDeg) < 0.000001;
 }
 
 function matchesPriority(target: MapFocusTarget | null | undefined, satelliteId: string, stationId: string) {
