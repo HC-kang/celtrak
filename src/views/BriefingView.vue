@@ -135,7 +135,7 @@ const activeLayers = computed(() => [
   { label: 'Fleet Tracks', detail: `${visibleFleetEntries.value.length}/${trackedObjects.value.length} visible`, active: visibleFleetEntries.value.length > 0 },
   { label: 'Ground Stations', detail: `${store.groundStations.filter((station) => station.enabled).length} online`, active: true },
   { label: 'Conjunction Risk', detail: `${store.filteredConjunctions.length} windows`, active: store.filteredConjunctions.length > 0 },
-  { label: 'Space Weather', detail: store.weather?.kp.storm ?? 'loading', active: Boolean(store.weather) },
+  { label: 'Space Weather', detail: store.weather?.kp.storm ?? (store.loading ? '불러오는 중' : '데이터 없음'), active: Boolean(store.weather) },
   { label: 'Decay Watch', detail: `${store.filteredDecayPredictions.length} entries`, active: store.filteredDecayPredictions.length > 0 },
 ]);
 

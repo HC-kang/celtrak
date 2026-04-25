@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none">
+  <rect width="1200" height="630" fill="#020409"/>
+  <rect x="0" y="0" width="1200" height="630" fill="url(#bg)"/>
+  <g opacity="0.34">
+    <path d="M0 108H1200M0 216H1200M0 324H1200M0 432H1200M0 540H1200" stroke="#FFFFFF" stroke-width="1"/>
+    <path d="M108 0V630M216 0V630M324 0V630M432 0V630M540 0V630M648 0V630M756 0V630M864 0V630M972 0V630M1080 0V630" stroke="#FFFFFF" stroke-width="1"/>
+  </g>
+  <rect x="56" y="56" width="1088" height="518" rx="42" fill="url(#panel)" stroke="rgba(255,255,255,0.18)" stroke-width="1.5"/>
+  <rect x="96" y="96" width="1008" height="5" rx="2.5" fill="#0070CC"/>
+  <g transform="translate(92 128)">
+    <rect width="104" height="104" rx="28" fill="#020409" stroke="rgba(255,255,255,0.18)"/>
+    <path d="M18 52C32 28 72 22 86 52C72 82 32 76 18 52Z" stroke="#53B1FF" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="52" cy="52" r="22" fill="#0070CC"/>
+    <circle cx="52" cy="52" r="9.5" fill="#FFFFFF"/>
+    <path d="M31 31L74 74" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" opacity="0.9"/>
+  </g>
+  <text x="92" y="304" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="400" letter-spacing="-3">
+    CelesTrak Orbit
+  </text>
+  <text x="92" y="378" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="400" letter-spacing="-3">
+    Lab Pro
+  </text>
+  <text x="96" y="432" fill="#BFD9F2" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="600">
+    Live orbit intelligence for selected fleets
+  </text>
+  <text x="96" y="474" fill="#8EA8BD" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="400">
+    OSINT catalog - Ground station passes - Space weather signals
+  </text>
+  <g transform="translate(760 150)">
+    <circle cx="160" cy="160" r="120" fill="rgba(0,112,204,0.22)" stroke="rgba(83,177,255,0.34)" stroke-width="2"/>
+    <circle cx="160" cy="160" r="76" fill="rgba(0,112,204,0.34)" stroke="#53B1FF" stroke-width="2"/>
+    <ellipse cx="160" cy="160" rx="158" ry="54" transform="rotate(-18 160 160)" stroke="#1EAEDB" stroke-width="4" stroke-dasharray="4 14"/>
+    <ellipse cx="160" cy="160" rx="128" ry="44" transform="rotate(39 160 160)" stroke="#0070CC" stroke-width="4" stroke-dasharray="4 12"/>
+    <circle cx="91" cy="123" r="11" fill="#FFFFFF"/>
+    <circle cx="228" cy="202" r="11" fill="#53B1FF"/>
+    <circle cx="160" cy="160" r="34" fill="#FFFFFF" opacity="0.92"/>
+  </g>
+  <g transform="translate(96 512)">
+    <rect width="176" height="46" rx="23" fill="#0070CC"/>
+    <text x="88" y="30" text-anchor="middle" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700">celtrak.blue-rabbit.kr</text>
+  </g>
+  <defs>
+    <radialGradient id="bg" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(152 2) rotate(31.6) scale(900 620)">
+      <stop stop-color="#083B66"/>
+      <stop offset="0.46" stop-color="#020409"/>
+      <stop offset="1" stop-color="#000000"/>
+    </radialGradient>
+    <linearGradient id="panel" x1="56" y1="56" x2="1044" y2="598" gradientUnits="userSpaceOnUse">
+      <stop stop-color="rgba(8,59,102,0.86)"/>
+      <stop offset="0.45" stop-color="rgba(18,19,20,0.92)"/>
+      <stop offset="1" stop-color="rgba(0,0,0,0.96)"/>
+    </linearGradient>
+  </defs>
+</svg>

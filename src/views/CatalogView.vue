@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
 import CatalogCard from '@/components/CatalogCard.vue';
+import LoadingState from '@/components/LoadingState.vue';
 import PanelCard from '@/components/PanelCard.vue';
 import OriginBadge from '@/components/OriginBadge.vue';
 import { useAppStore } from '@/stores/app';
@@ -46,6 +47,7 @@ const filtered = computed(() =>
 const visibleEntries = computed(() => filtered.value.slice(0, visibleLimit.value));
 const hasMore = computed(() => visibleEntries.value.length < filtered.value.length);
 const selectedFleetName = computed(() => store.selectedFleet?.name ?? 'No fleet selected');
+const catalogLoading = computed(() => store.loading && !store.catalog.length);
 
 watch(pageSize, (size) => {
   visibleLimit.value = size;
@@ -113,50 +115,62 @@ async function toggleTracking(entry: CatalogEntry) {
           <option v-for="item in owners" :key="item" :value="item">{{ item }}</option>
         </select>
       </div>
-      <p class="supporting-text">
+      <p v-if="catalogLoading" class="supporting-text">
+        CelesTrak active catalog를 불러오는 중입니다. 네트워크 상태에 따라 몇 초 정도 걸릴 수 있습니다.
+      </p>
+      <p v-else class="supporting-text">
         {{ formatNumber(store.catalog.length) }} indexed · {{ formatNumber(filtered.length) }} matched ·
         {{ formatNumber(visibleEntries.length) }} visible. 현재 선택 플릿: {{ selectedFleetName }}.
       </p>
     </PanelCard>
 
-    <div v-if="isMobileViewport" class="catalog-grid">
-      <CatalogCard
-        v-for="entry in visibleEntries"
-        :key="entry.satcat.catalogNumber"
-        :entry="entry"
-        :tracked="isTracked(entry)"
-        @toggle="toggleTracking"
-      />
-    </div>
+    <LoadingState
+      v-if="catalogLoading"
+      title="Catalog 데이터 불러오는 중"
+      :message="store.loadingMessage"
+      variant="inline"
+    />
 
-    <PanelCard v-else title="Catalog Table" subtitle="Adaptive Table">
-      <div class="catalog-table">
-        <header class="catalog-table__row catalog-table__row--header">
-          <span>Name</span>
-          <span>NORAD</span>
-          <span>Group</span>
-          <span>Apogee</span>
-          <span>Period</span>
-          <span />
-        </header>
-        <article v-for="entry in visibleEntries" :key="entry.satcat.catalogNumber" class="catalog-table__row">
-          <strong>{{ entry.satcat.objectName }}</strong>
-          <span>{{ entry.satcat.catalogNumber }}</span>
-          <span>{{ entry.group }}</span>
-          <span>{{ formatNumber(entry.satcat.apogeeKm) }} km</span>
-          <span>{{ formatNumber(entry.satcat.periodMinutes) }} min</span>
-          <button
-            class="button button--ghost"
-            :class="{ 'button--selected': isTracked(entry) }"
-            @click="toggleTracking(entry)"
-          >
-            {{ isTracked(entry) ? 'Tracking' : 'Track' }}
-          </button>
-        </article>
+    <template v-else>
+      <div v-if="isMobileViewport" class="catalog-grid">
+        <CatalogCard
+          v-for="entry in visibleEntries"
+          :key="entry.satcat.catalogNumber"
+          :entry="entry"
+          :tracked="isTracked(entry)"
+          @toggle="toggleTracking"
+        />
       </div>
-    </PanelCard>
 
-    <div v-if="hasMore" class="load-more-row">
+      <PanelCard v-else title="Catalog Table" subtitle="Adaptive Table">
+        <div class="catalog-table">
+          <header class="catalog-table__row catalog-table__row--header">
+            <span>Name</span>
+            <span>NORAD</span>
+            <span>Group</span>
+            <span>Apogee</span>
+            <span>Period</span>
+            <span />
+          </header>
+          <article v-for="entry in visibleEntries" :key="entry.satcat.catalogNumber" class="catalog-table__row">
+            <strong>{{ entry.satcat.objectName }}</strong>
+            <span>{{ entry.satcat.catalogNumber }}</span>
+            <span>{{ entry.group }}</span>
+            <span>{{ formatNumber(entry.satcat.apogeeKm) }} km</span>
+            <span>{{ formatNumber(entry.satcat.periodMinutes) }} min</span>
+            <button
+              class="button button--ghost"
+              :class="{ 'button--selected': isTracked(entry) }"
+              @click="toggleTracking(entry)"
+            >
+              {{ isTracked(entry) ? 'Tracking' : 'Track' }}
+            </button>
+          </article>
+        </div>
+      </PanelCard>
+    </template>
+
+    <div v-if="!catalogLoading && hasMore" class="load-more-row">
       <button class="button button--ghost" type="button" @click="showMore">
         더 보기 · {{ formatNumber(filtered.length - visibleEntries.length) }} remaining
       </button>

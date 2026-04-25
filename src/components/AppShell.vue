@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
+import LoadingState from '@/components/LoadingState.vue';
 import { useViewport } from '@/composables/useViewport';
 import { useAppStore } from '@/stores/app';
 import { formatTimestamp } from '@/lib/format';
@@ -25,6 +26,7 @@ const navItems = [
 const isMobileTabs = computed(() => viewport.breakpoint.value === 'xs' || viewport.breakpoint.value === 'sm');
 const usesSidebar = computed(() => viewport.breakpoint.value === 'lg' || viewport.breakpoint.value === 'xl');
 const shellClass = computed(() => `app-shell--${viewport.breakpoint.value}`);
+const isInitialLoading = computed(() => store.loading && !store.lastSyncedAt);
 
 onMounted(() => {
   lastScrollY.value = currentScrollY();
@@ -108,7 +110,11 @@ function updateBottomTabsVisibility() {
           <p class="eyebrow">{{ route.name }}</p>
           <h1>CelesTrak Orbit Lab Pro</h1>
         </div>
-        <div v-if="store.updateAvailable || store.offline" class="topbar__actions">
+        <div v-if="store.loading || store.updateAvailable || store.offline" class="topbar__actions">
+          <span v-if="store.loading" class="topbar__chip topbar__chip--loading" role="status" aria-live="polite">
+            <span class="loading-dot" aria-hidden="true"></span>
+            <span class="topbar__chip-text">{{ store.loadingMessage }}</span>
+          </span>
           <button v-if="store.updateAvailable" class="button" @click="store.applyUpdate()">업데이트 적용</button>
           <span v-if="store.offline" class="topbar__chip topbar__chip--warn">
             오프라인 · {{ formatTimestamp(store.lastSyncedAt ?? undefined) }}
@@ -122,8 +128,14 @@ function updateBottomTabsVisibility() {
         </RouterLink>
       </nav>
 
-      <main class="page-shell">
-        <slot />
+      <main class="page-shell" :aria-busy="store.loading">
+        <LoadingState
+          v-if="isInitialLoading"
+          title="데이터 불러오는 중"
+          :message="store.loadingMessage"
+          variant="global"
+        />
+        <slot v-else />
       </main>
     </div>
 
