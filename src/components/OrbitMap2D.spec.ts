@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import type { CatalogEntry, GroundStation, LiveContactLink } from '@/domain/types';
 import OrbitMap2D from './OrbitMap2D.vue';
@@ -83,5 +83,47 @@ describe('OrbitMap2D', () => {
     expect(wrapper.emitted('focus-target')?.[0]).toEqual([{ type: 'groundStation', id: 'gs-seoul' }]);
     await wrapper.find('.orbit-map__track').trigger('click');
     expect(wrapper.emitted('focus-target')?.[1]).toEqual([{ type: 'satellite', id: 'catalog:25544' }]);
+  });
+
+  it('includes satellite label rectangles in map hit testing', async () => {
+    const wrapper = mount(OrbitMap2D, {
+      props: {
+        satellites: [satelliteEntry],
+        groundStations: [station],
+        contactLinks: [],
+        orbitMode: 'live',
+        orbitTimeIso: '2026-04-25T00:00:00.000Z',
+      },
+    });
+    const svg = wrapper.find('svg').element as SVGSVGElement & {
+      setPointerCapture: (pointerId: number) => void;
+      hasPointerCapture: (pointerId: number) => boolean;
+      releasePointerCapture: (pointerId: number) => void;
+    };
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1024, height: 1024, right: 1024, bottom: 1024, x: 0, y: 0, toJSON: () => ({}) });
+    svg.setPointerCapture = vi.fn();
+    svg.hasPointerCapture = vi.fn(() => true);
+    svg.releasePointerCapture = vi.fn();
+
+    const transform = wrapper.find('.orbit-map__satellite-label').attributes('transform') ?? '';
+    const [, labelX, labelY] = /translate\(([-\d.]+) ([-\d.]+)\)/.exec(transform) ?? [];
+    expect(labelX).toBeTruthy();
+
+    await wrapper.find('svg').trigger('pointerdown', {
+      pointerId: 1,
+      pointerType: 'mouse',
+      button: 0,
+      clientX: Number(labelX) + 20,
+      clientY: Number(labelY) + 16,
+    });
+    await wrapper.find('svg').trigger('pointerup', {
+      pointerId: 1,
+      pointerType: 'mouse',
+      button: 0,
+      clientX: Number(labelX) + 20,
+      clientY: Number(labelY) + 16,
+    });
+
+    expect(wrapper.emitted('focus-target')?.[0]).toEqual([{ type: 'satellite', id: 'catalog:25544' }]);
   });
 });

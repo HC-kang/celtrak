@@ -106,12 +106,14 @@ const plotted = computed(() =>
       if (!point) return null;
       const mapPoint = toMapPoint(point.lon, point.lat);
       const trail = props.dataSaver ? [] : buildTrail(satrec, displayedTime.value);
+      const labelBounds = satelliteLabelBounds(mapPoint);
       return {
         id: `catalog:${entry.satcat.catalogNumber}`,
         entry,
         color: TRACK_COLORS[index % TRACK_COLORS.length],
         label: entry.satcat.objectName.replace(/\s*\(.+?\)\s*/g, '').slice(0, 18),
         point: mapPoint,
+        labelBounds,
         geo: point,
         trailSegments: splitTrail(trail),
       };
@@ -481,6 +483,25 @@ function formatCoordinate(value: number, axis: 'lat' | 'lon') {
   return `${Math.abs(value).toFixed(1)}°${direction}`;
 }
 
+function satelliteLabelBounds(point: MapPoint): MapBounds {
+  return {
+    x: Math.min(point.x + 18, MAP_WIDTH - 155),
+    y: Math.max(point.y - 28, 38),
+    width: 138,
+    height: 38,
+  };
+}
+
+function stationLabelBounds(station: { x: number; y: number; name: string; labelAnchor: string }): MapBounds {
+  const width = clamp(station.name.length * 7.2 + 16, 76, 210);
+  return {
+    x: station.labelAnchor === 'start' ? station.x + 12 : station.x - 12 - width,
+    y: station.y - 29,
+    width,
+    height: 22,
+  };
+}
+
 function focusSatellite(item: { id: string }) {
   emit('focus-target', { type: 'satellite', id: item.id });
 }
@@ -492,6 +513,18 @@ function focusGroundStation(station: { id: string }) {
 function focusNearestMapTarget(clientX: number, clientY: number) {
   const point = clientToMapPoint(clientX, clientY);
   const hitRadius = Math.max((currentView.value.width / viewportSize.value.width) * 32, 14);
+  const satelliteLabelHit = plotted.value.find((item) => boundsContains(item.labelBounds, point));
+  if (satelliteLabelHit) {
+    emit('focus-target', { type: 'satellite', id: satelliteLabelHit.id });
+    return;
+  }
+
+  const stationLabelHit = stationPoints.value.find((station) => boundsContains(stationLabelBounds(station), point));
+  if (stationLabelHit) {
+    emit('focus-target', { type: 'groundStation', id: stationLabelHit.id });
+    return;
+  }
+
   const satelliteHit = nearestByDistance(
     plotted.value.map((item) => ({ target: { type: 'satellite', id: item.id } satisfies MapFocusTarget, point: item.point })),
     point,
@@ -521,6 +554,10 @@ function nearestByDistance(items: Array<{ target: MapFocusTarget; point: MapPoin
   return nearest;
 }
 
+function boundsContains(bounds: MapBounds, point: MapPoint) {
+  return point.x >= bounds.x && point.x <= bounds.x + bounds.width && point.y >= bounds.y && point.y <= bounds.y + bounds.height;
+}
+
 function targetMatches(left: MapFocusTarget | null | undefined, right: MapFocusTarget) {
   return Boolean(left && left.type === right.type && left.id === right.id);
 }
@@ -542,6 +579,11 @@ function formatTimestampWithSeconds(date: Date) {
 interface MapPoint {
   x: number;
   y: number;
+}
+
+interface MapBounds extends MapPoint {
+  width: number;
+  height: number;
 }
 
 interface OsmTile {
@@ -725,7 +767,7 @@ interface PinchState {
         />
         <circle :cx="item.point.x" :cy="item.point.y" r="19" class="orbit-map__satellite-ping" :stroke="item.color" />
         <circle :cx="item.point.x" :cy="item.point.y" r="6.5" class="orbit-map__satellite-core" :fill="item.color" />
-        <g class="orbit-map__satellite-label" :transform="`translate(${Math.min(item.point.x + 18, MAP_WIDTH - 155)} ${Math.max(item.point.y - 28, 38)})`">
+        <g class="orbit-map__satellite-label" :transform="`translate(${item.labelBounds.x} ${item.labelBounds.y})`">
           <rect width="138" height="38" rx="12" />
           <text x="12" y="16">{{ item.label }}</text>
           <text x="12" y="30">{{ formatCoordinate(item.geo.lat, 'lat') }} · {{ formatCoordinate(item.geo.lon, 'lon') }}</text>
