@@ -963,6 +963,85 @@ textarea:focus-visible {
   letter-spacing: 0.04em;
 }
 
+.focus-inspector__entity-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.focus-inspector__entity-line--subtle {
+  margin-top: 5px;
+}
+
+.focus-inspector__entity-line > span:not(.focus-inspector__chip) {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.focus-inspector__chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: 26px;
+  min-width: 0;
+  padding: 4px 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid rgba(83, 177, 255, 0.22);
+  color: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 0.76rem;
+  font-weight: 800;
+  line-height: 1.15;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+button.focus-inspector__chip {
+  cursor: pointer;
+}
+
+button.focus-inspector__chip:hover,
+button.focus-inspector__chip:focus-visible,
+.focus-inspector__chip--preview {
+  color: #ffffff;
+  background:
+    linear-gradient(135deg, rgba(30, 174, 219, 0.34), rgba(0, 112, 204, 0.24)),
+    rgba(30, 174, 219, 0.18);
+  border-color: #d7f1ff;
+  box-shadow:
+    0 0 0 1px rgba(215, 241, 255, 0.38),
+    0 0 18px rgba(30, 174, 219, 0.48);
+}
+
+.focus-inspector__chip--active {
+  color: #001220;
+  background: #ffffff;
+  border-color: #ffffff;
+  box-shadow:
+    0 0 0 2px rgba(0, 112, 204, 0.54),
+    0 0 20px rgba(255, 255, 255, 0.26);
+}
+
+.focus-inspector__chip--ground-station:not(.focus-inspector__chip--active) {
+  border-color: rgba(30, 174, 219, 0.34);
+}
+
+.focus-inspector__chip--static {
+  cursor: default;
+  opacity: 0.68;
+  border-style: dashed;
+}
+
 .ground-station-control {
   min-height: 0;
   border-color: rgba(83, 177, 255, 0.18);
@@ -2361,6 +2440,12 @@ textarea:focus-visible {
   stroke-dasharray: none;
 }
 
+.orbit-map__contact-link--preview path {
+  stroke: #d7f1ff;
+  stroke-width: 3;
+  stroke-dasharray: 2 6;
+}
+
 .orbit-map__contact-link text {
   fill: #ffffff;
   font-size: 10px;
@@ -2426,13 +2511,29 @@ textarea:focus-visible {
   stroke-width: 3.4;
 }
 
+.orbit-map__track--preview .orbit-map__satellite-ping {
+  opacity: 0.76;
+  stroke-width: 3.2;
+  stroke-dasharray: 2 5;
+}
+
 .orbit-map__track--focused .orbit-map__satellite-core {
   stroke: #ffffff;
   stroke-width: 4;
 }
 
+.orbit-map__track--preview .orbit-map__satellite-core {
+  stroke: #d7f1ff;
+  stroke-width: 3.6;
+}
+
 .orbit-map__track--focused .orbit-map__satellite-label rect {
   stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.orbit-map__track--preview .orbit-map__satellite-label rect {
+  stroke: #d7f1ff;
   stroke-width: 2;
 }
 
@@ -2463,6 +2564,13 @@ textarea:focus-visible {
   stroke: #ffffff;
   stroke-width: 2.4;
   stroke-dasharray: none;
+}
+
+.orbit-map__station--preview .orbit-map__station-range {
+  fill: rgba(215, 241, 255, 0.1);
+  stroke: #d7f1ff;
+  stroke-width: 2.2;
+  stroke-dasharray: 2 5;
 }
 
 @keyframes satellite-pulse {

@@ -28,6 +28,7 @@ const orbitClockTick = ref(Date.now());
 const mapControlsOpen = ref(false);
 const mapFocusMode = ref(false);
 const focusedTarget = ref<MapFocusTarget | null>(null);
+const hoveredTarget = ref<MapFocusTarget | null>(null);
 const trackingScopeTab = ref<'groundStations' | 'trackedObjects'>('groundStations');
 const cdmScope = ref<'tracked' | 'focused' | 'all'>('tracked');
 const cdmScopeRecords = ref<ConjunctionRecord[] | null>(null);
@@ -378,8 +379,40 @@ function setFocusedTarget(target: MapFocusTarget) {
   focusedTarget.value = target;
 }
 
+function setFocusedTargetIfAvailable(target: MapFocusTarget | null) {
+  if (target) {
+    focusedTarget.value = target;
+  }
+}
+
 function clearFocusedTarget() {
   focusedTarget.value = null;
+}
+
+function satelliteFocusTarget(id: string): MapFocusTarget {
+  return { type: 'satellite', id };
+}
+
+function groundStationFocusTarget(id: string): MapFocusTarget {
+  return { type: 'groundStation', id };
+}
+
+function conjunctionObjectTarget(item: ConjunctionRecord['primary']) {
+  return item.catalogNumber ? satelliteFocusTarget(`catalog:${item.catalogNumber}`) : null;
+}
+
+function setHoveredTarget(target: MapFocusTarget | null) {
+  hoveredTarget.value = target;
+}
+
+function clearHoveredTarget(target: MapFocusTarget | null) {
+  if (!target || focusTargetMatches(hoveredTarget.value, target)) {
+    hoveredTarget.value = null;
+  }
+}
+
+function focusTargetMatches(left: MapFocusTarget | null | undefined, right: MapFocusTarget | null | undefined) {
+  return Boolean(left && right && left.type === right.type && left.id === right.id);
 }
 
 function formatCountdown(seconds: number | undefined, lowerBound = false, estimated = false) {
@@ -724,6 +757,7 @@ watch(
             :satellites="visibleFleetEntries"
             :contact-links="contactLinks"
             :focused-target="focusedTarget"
+            :hovered-target="hoveredTarget"
             :ground-stations="store.groundStations"
             :live-playback-rate="livePlaybackRate"
             :orbit-mode="orbitMode"
@@ -737,6 +771,7 @@ watch(
             :satellites="visibleFleetEntries"
             :contact-links="contactLinks"
             :focused-target="focusedTarget"
+            :hovered-target="hoveredTarget"
             :ground-stations="store.groundStations"
             :orbit-time-iso="displayedOrbitTimeIso"
             :orbit-mode="orbitMode"
@@ -809,7 +844,41 @@ watch(
               <span>Contact Windows</span>
               <article v-for="link in focusedLinks" :key="`${link.satelliteId}-${link.groundStationId}`" class="focus-inspector__row" :class="`focus-inspector__row--${link.status.toLowerCase().replace('_', '-')}`">
                 <div>
-                  <strong>{{ link.satelliteName }} → {{ link.groundStationName }}</strong>
+                  <div class="focus-inspector__entity-line">
+                    <button
+                      class="focus-inspector__chip focus-inspector__chip--satellite"
+                      :class="{
+                        'focus-inspector__chip--active': focusTargetMatches(focusedTarget, satelliteFocusTarget(link.satelliteId)),
+                        'focus-inspector__chip--preview': focusTargetMatches(hoveredTarget, satelliteFocusTarget(link.satelliteId)) && !focusTargetMatches(focusedTarget, satelliteFocusTarget(link.satelliteId)),
+                      }"
+                      type="button"
+                      :aria-pressed="focusTargetMatches(focusedTarget, satelliteFocusTarget(link.satelliteId))"
+                      @click="setFocusedTarget(satelliteFocusTarget(link.satelliteId))"
+                      @mouseenter="setHoveredTarget(satelliteFocusTarget(link.satelliteId))"
+                      @mouseleave="clearHoveredTarget(satelliteFocusTarget(link.satelliteId))"
+                      @focus="setHoveredTarget(satelliteFocusTarget(link.satelliteId))"
+                      @blur="clearHoveredTarget(satelliteFocusTarget(link.satelliteId))"
+                    >
+                      {{ link.satelliteName }}
+                    </button>
+                    <span aria-hidden="true">→</span>
+                    <button
+                      class="focus-inspector__chip focus-inspector__chip--ground-station"
+                      :class="{
+                        'focus-inspector__chip--active': focusTargetMatches(focusedTarget, groundStationFocusTarget(link.groundStationId)),
+                        'focus-inspector__chip--preview': focusTargetMatches(hoveredTarget, groundStationFocusTarget(link.groundStationId)) && !focusTargetMatches(focusedTarget, groundStationFocusTarget(link.groundStationId)),
+                      }"
+                      type="button"
+                      :aria-pressed="focusTargetMatches(focusedTarget, groundStationFocusTarget(link.groundStationId))"
+                      @click="setFocusedTarget(groundStationFocusTarget(link.groundStationId))"
+                      @mouseenter="setHoveredTarget(groundStationFocusTarget(link.groundStationId))"
+                      @mouseleave="clearHoveredTarget(groundStationFocusTarget(link.groundStationId))"
+                      @focus="setHoveredTarget(groundStationFocusTarget(link.groundStationId))"
+                      @blur="clearHoveredTarget(groundStationFocusTarget(link.groundStationId))"
+                    >
+                      {{ link.groundStationName }}
+                    </button>
+                  </div>
                   <p>{{ linkStatusLabel(link) }} · el {{ link.elevationDeg.toFixed(1) }}° · az {{ link.azimuthDeg.toFixed(0) }}°</p>
                 </div>
               </article>
@@ -821,7 +890,46 @@ watch(
               <article v-for="item in focusedConjunctions" :key="item.id" class="focus-inspector__row" :class="`focus-inspector__row--${cdmSeverity(item)}`">
                 <div>
                   <strong>{{ cdmSeverityLabel(item) }} · {{ item.missDistanceKm.toFixed(2) }} km</strong>
-                  <p>{{ item.primary.name }} × {{ item.secondary.name }} · {{ formatRelative(item.tca) }}</p>
+                  <div class="focus-inspector__entity-line focus-inspector__entity-line--subtle">
+                    <button
+                      v-if="conjunctionObjectTarget(item.primary)"
+                      class="focus-inspector__chip focus-inspector__chip--satellite"
+                      :class="{
+                        'focus-inspector__chip--active': focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.primary)),
+                        'focus-inspector__chip--preview': focusTargetMatches(hoveredTarget, conjunctionObjectTarget(item.primary)) && !focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.primary)),
+                      }"
+                      type="button"
+                      :aria-pressed="focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.primary))"
+                      @click="setFocusedTargetIfAvailable(conjunctionObjectTarget(item.primary))"
+                      @mouseenter="setHoveredTarget(conjunctionObjectTarget(item.primary))"
+                      @mouseleave="clearHoveredTarget(conjunctionObjectTarget(item.primary))"
+                      @focus="setHoveredTarget(conjunctionObjectTarget(item.primary))"
+                      @blur="clearHoveredTarget(conjunctionObjectTarget(item.primary))"
+                    >
+                      {{ item.primary.name }}
+                    </button>
+                    <span v-else class="focus-inspector__chip focus-inspector__chip--static">{{ item.primary.name }}</span>
+                    <span aria-hidden="true">×</span>
+                    <button
+                      v-if="conjunctionObjectTarget(item.secondary)"
+                      class="focus-inspector__chip focus-inspector__chip--satellite"
+                      :class="{
+                        'focus-inspector__chip--active': focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.secondary)),
+                        'focus-inspector__chip--preview': focusTargetMatches(hoveredTarget, conjunctionObjectTarget(item.secondary)) && !focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.secondary)),
+                      }"
+                      type="button"
+                      :aria-pressed="focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.secondary))"
+                      @click="setFocusedTargetIfAvailable(conjunctionObjectTarget(item.secondary))"
+                      @mouseenter="setHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                      @mouseleave="clearHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                      @focus="setHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                      @blur="clearHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                    >
+                      {{ item.secondary.name }}
+                    </button>
+                    <span v-else class="focus-inspector__chip focus-inspector__chip--static">{{ item.secondary.name }}</span>
+                  </div>
+                  <p>{{ formatRelative(item.tca) }}</p>
                 </div>
               </article>
               <p v-if="!focusedConjunctions.length" class="empty-state">근접경고 없음</p>
