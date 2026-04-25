@@ -7,5 +7,9 @@ directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 
+[triggers]
+crons = ["37 */2 * * *"]
+
 [vars]
 CACHE_TTL_SECONDS = "900"
+CATALOG_CACHE_TTL_SECONDS = "9000"
