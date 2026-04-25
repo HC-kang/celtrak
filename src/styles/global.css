@@ -15,8 +15,13 @@
   --divider: #f3f3f3;
   --ink: #1f1f1f;
   --body-gray: #6b6b6b;
-  --warn: #d53b00;
+  --warn: #f5c84b;
+  --warn-rgb: 245, 200, 75;
   --critical: #c81b3a;
+  --critical-rgb: 200, 27, 58;
+  --contact-aos: #53b1ff;
+  --contact-los: #1eaedb;
+  --contact-idle: rgba(148, 163, 184, 0.72);
   --radius-xl: 24px;
   --radius-lg: 19px;
   --radius-md: 12px;
@@ -263,8 +268,8 @@ textarea:focus-visible {
 }
 
 .topbar__chip--warn {
-  background: rgba(213, 59, 0, 0.18);
-  border-color: rgba(213, 59, 0, 0.38);
+  background: rgba(var(--warn-rgb), 0.18);
+  border-color: rgba(var(--warn-rgb), 0.38);
 }
 
 .topbar__chip--loading {
@@ -525,7 +530,7 @@ textarea:focus-visible {
 
 .war-room__status-dot--warn {
   background: var(--warn);
-  box-shadow: 0 0 0 7px rgba(213, 59, 0, 0.18);
+  box-shadow: 0 0 0 7px rgba(var(--warn-rgb), 0.18);
 }
 
 .war-room__status small {
@@ -564,7 +569,7 @@ textarea:focus-visible {
 }
 
 .war-room__stat--warn {
-  border-color: rgba(213, 59, 0, 0.38);
+  border-color: rgba(var(--warn-rgb), 0.38);
 }
 
 .war-room__stat--critical {
@@ -794,8 +799,14 @@ textarea:focus-visible {
 }
 
 .focus-inspector {
-  gap: 16px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
   min-height: clamp(420px, 36vw, 540px);
+}
+
+.focus-inspector .war-room__side-header {
+  margin-bottom: 0;
 }
 
 .focus-inspector__hero {
@@ -1081,19 +1092,28 @@ textarea:focus-visible {
   font-size: 0.88rem;
 }
 
-.focus-inspector__row--in-contact,
 .focus-inspector__row--critical {
   border-left-color: var(--critical);
 }
 
-.focus-inspector__row--before-aos,
 .focus-inspector__row--warn {
   border-left-color: var(--warn);
 }
 
-.focus-inspector__row--after-los,
 .focus-inspector__row--info {
   border-left-color: rgba(83, 177, 255, 0.68);
+}
+
+.focus-inspector__row--in-contact {
+  border-left-color: var(--contact-los);
+}
+
+.focus-inspector__row--before-aos {
+  border-left-color: var(--contact-aos);
+}
+
+.focus-inspector__row--after-los {
+  border-left-color: var(--contact-idle);
 }
 
 .war-room__feed,
@@ -1142,8 +1162,8 @@ textarea:focus-visible {
 }
 
 .war-room__feed-item--warn {
-  border-color: rgba(213, 59, 0, 0.4);
-  background: rgba(213, 59, 0, 0.14);
+  border-color: rgba(var(--warn-rgb), 0.4);
+  background: rgba(var(--warn-rgb), 0.14);
 }
 
 .war-room__feed-item--info {
@@ -1197,8 +1217,8 @@ textarea:focus-visible {
 }
 
 .panel-card .war-room__feed-item--warn {
-  border-color: rgba(213, 59, 0, 0.25);
-  background: rgba(213, 59, 0, 0.07);
+  border-color: rgba(var(--warn-rgb), 0.25);
+  background: rgba(var(--warn-rgb), 0.07);
 }
 
 .panel-card .war-room__feed-item span,
@@ -1319,8 +1339,8 @@ textarea:focus-visible {
 }
 
 .alert-strip__item--warn {
-  border-color: rgba(213, 59, 0, 0.28);
-  background: rgba(213, 59, 0, 0.08);
+  border-color: rgba(var(--warn-rgb), 0.28);
+  background: rgba(var(--warn-rgb), 0.08);
 }
 
 .alert-strip__item--critical {
@@ -1369,7 +1389,7 @@ textarea:focus-visible {
 }
 
 .metric-card--warn {
-  border-color: rgba(213, 59, 0, 0.24);
+  border-color: rgba(var(--warn-rgb), 0.24);
 }
 
 .metric-card--critical {
@@ -1403,8 +1423,8 @@ textarea:focus-visible {
 }
 
 .stack-list__item--warn {
-  border-color: rgba(213, 59, 0, 0.34);
-  background: rgba(213, 59, 0, 0.08);
+  border-color: rgba(var(--warn-rgb), 0.34);
+  background: rgba(var(--warn-rgb), 0.08);
 }
 
 .stack-list__item--info {

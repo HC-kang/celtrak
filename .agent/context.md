@@ -74,3 +74,5 @@
 - 2026-04-26: Ground-station elevation is strictly local `GroundStation.elevationMaskDeg` user override/default data, not externally queried hardware metadata. Contact countdowns should avoid `계산 중` by preserving open-ended pass windows through the prediction horizon, using 1-minute focused priority passes, and falling back to cached focused AOS/LOS threshold scans. Ground Stations now has its own top-level route with all-station controls and worker-backed current visible-satellite scans.
 
 - 2026-04-26: Ground-station elevation masks now carry provenance metadata (`verified`/`inferred`/`default`/`user`). Keep numeric masks user-overridable, show source confidence in Briefing/Ground Stations/More, and backfill local default source metadata even when the deployed Worker `/api/ground-stations` response has not yet been updated.
+
+- 2026-04-26: User clarified satellite name rect omission is acceptable in dense 2D canvas mode, but 3D rendered satellites should all expose labels. More was merged into Ground Stations to keep mobile bottom tabs to one row; `/more` now redirects to `/stations`.

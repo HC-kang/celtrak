@@ -21,7 +21,6 @@ const navItems = [
   { label: 'Fleets', shortLabel: 'Fleets', path: '/fleets' },
   { label: 'Ground Stations', shortLabel: 'Ground', path: '/stations' },
   { label: 'Space Weather', shortLabel: 'Weather', path: '/weather' },
-  { label: 'More', shortLabel: 'More', path: '/more' },
 ];
 
 const isMobileTabs = computed(() => viewport.breakpoint.value === 'xs' || viewport.breakpoint.value === 'sm');

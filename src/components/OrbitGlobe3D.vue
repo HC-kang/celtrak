@@ -271,7 +271,7 @@ function updateSatellites() {
   const baseTime = new Date(props.orbitTimeIso);
   const entries = props.satellites.filter((entry) => entry.tle).slice(0, renderLimit.value);
 
-  for (const [index, entry] of entries.entries()) {
+  for (const entry of entries) {
     if (!entry.tle) continue;
     const satrec = satellite.twoline2satrec(entry.tle.line1, entry.tle.line2);
     const point = getOrbitPoint(satrec, baseTime);
@@ -339,12 +339,10 @@ function updateSatellites() {
     picker.userData.focusTarget = focusTarget;
     group.add(picker);
 
-    if (index < (props.dataSaver ? 4 : 10)) {
-      const label = createLabelSprite(shortSatelliteName(entry), altitudeLabel(point.altitudeKm), color);
-      label.position.copy(point.position).multiplyScalar(1.08);
-      label.raycast = () => {};
-      group.add(label);
-    }
+    const label = createLabelSprite(shortSatelliteName(entry), altitudeLabel(point.altitudeKm), color);
+    label.position.copy(point.position).multiplyScalar(1.08);
+    label.raycast = () => {};
+    group.add(label);
 
     satelliteLayer.add(group);
   }

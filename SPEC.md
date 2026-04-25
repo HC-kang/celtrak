@@ -570,7 +570,7 @@ iOS notch, Android gesture bar 대응:
 
 | 브레이크포인트 | 네비 구조 |
 |---|---|
-| xs·sm | 하단 탭 바 5슬롯: **Briefing / Catalog / Fleets / Space Weather / More**. "More"에 Ground Stations, Conjunctions, Settings |
+| xs·sm | 하단 탭 바 5슬롯: **Briefing / Catalog / Fleets / Ground Stations / Space Weather**. Ground Stations에 지상국, Conjunctions, Settings 보조 운영 도구를 통합 |
 | md | 상단 앱바 + 햄버거 드로어 (전 메뉴 노출) |
 | lg | 접이식 좌측 사이드 네비 (기본 접힘, 클릭 시 펼침) |
 | xl+ | 고정 좌측 사이드 네비 (펼침 상태 기본) |

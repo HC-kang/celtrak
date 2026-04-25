@@ -35,7 +35,7 @@ export const router = createRouter({
     {
       path: '/more',
       name: 'more',
-      component: () => import('@/views/MoreView.vue'),
+      redirect: '/stations',
     },
   ],
 });
