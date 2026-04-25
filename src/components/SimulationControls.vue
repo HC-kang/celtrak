@@ -16,7 +16,7 @@ const emit = defineEmits<{
 }>();
 
 const shiftControls = [-12, -6, -3, -1, -0.5, 0.5, 1, 3, 6, 12];
-const playbackRates = [1, 60, 300];
+const playbackRates = [1, 10, 20, 30, 60, 300];
 
 const inputValue = ref('');
 const isEditingTime = ref(false);

@@ -19,6 +19,7 @@ const navItems = [
   { label: 'Briefing', shortLabel: 'Brief', path: '/briefing' },
   { label: 'Catalog', shortLabel: 'Catalog', path: '/catalog' },
   { label: 'Fleets', shortLabel: 'Fleets', path: '/fleets' },
+  { label: 'Ground Stations', shortLabel: 'Ground', path: '/stations' },
   { label: 'Space Weather', shortLabel: 'Weather', path: '/weather' },
   { label: 'More', shortLabel: 'More', path: '/more' },
 ];

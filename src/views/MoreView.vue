@@ -8,6 +8,7 @@ import EventTimeline from '@/components/EventTimeline.vue';
 import { useAppStore } from '@/stores/app';
 import { formatRelative, formatTimestamp } from '@/lib/format';
 import { useViewport } from '@/composables/useViewport';
+import { createUserElevationMaskSource, elevationMaskSourceLabel } from '@/lib/groundStationElevation';
 
 const store = useAppStore();
 const viewport = useViewport();
@@ -63,6 +64,7 @@ async function addGroundStation() {
     lonDeg: Number(stationForm.lonDeg),
     altitudeM: Number(stationForm.altitudeM),
     elevationMaskDeg: Number(stationForm.elevationMaskDeg),
+    elevationMaskSource: createUserElevationMaskSource(),
     enabled: true,
     schemaVersion: 1,
   });
@@ -132,7 +134,7 @@ async function submitEvent() {
         <article v-for="station in store.groundStations" :key="station.id" class="table-like__row">
           <div>
             <strong>{{ station.name }}</strong>
-            <p>{{ station.latDeg }}, {{ station.lonDeg }} · mask {{ station.elevationMaskDeg }}°</p>
+            <p>{{ station.latDeg }}, {{ station.lonDeg }} · mask {{ station.elevationMaskDeg }}° · {{ elevationMaskSourceLabel(station.elevationMaskSource) }}</p>
           </div>
           <div class="inline-actions">
             <label class="setting-toggle setting-toggle--compact">

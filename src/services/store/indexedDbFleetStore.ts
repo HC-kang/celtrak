@@ -15,7 +15,7 @@ import { InMemoryFleetStore } from '@/services/store/inMemoryFleetStore';
 
 const DB_NAME = 'orbit-lab';
 const DB_VERSION = 2;
-const DB_OPERATION_TIMEOUT_MS = 1500;
+const DB_OPERATION_TIMEOUT_MS = 5000;
 
 export class IndexedDBFleetStore implements FleetStore {
   private readonly fallback = new InMemoryFleetStore();
@@ -70,7 +70,7 @@ export class IndexedDBFleetStore implements FleetStore {
       'upsertFleet',
       async () => {
         const db = await this.dbPromise;
-        await db.put('fleets', fleet);
+        await db.put('fleets', cloneForStorage(fleet));
       },
       () => this.fallback.upsertFleet(fleet),
     );
@@ -103,7 +103,7 @@ export class IndexedDBFleetStore implements FleetStore {
       'upsertCustomTLE',
       async () => {
         const db = await this.dbPromise;
-        await db.put('customTles', tle);
+        await db.put('customTles', cloneForStorage(tle));
       },
       () => this.fallback.upsertCustomTLE(tle),
     );
@@ -140,7 +140,7 @@ export class IndexedDBFleetStore implements FleetStore {
       'appendOpsStatus',
       async () => {
         const db = await this.dbPromise;
-        await db.put('opsStatuses', status);
+        await db.put('opsStatuses', cloneForStorage(status));
       },
       () => this.fallback.appendOpsStatus(status),
     );
@@ -166,7 +166,7 @@ export class IndexedDBFleetStore implements FleetStore {
       'upsertAnomaly',
       async () => {
         const db = await this.dbPromise;
-        await db.put('anomalies', anomaly);
+        await db.put('anomalies', cloneForStorage(anomaly));
       },
       () => this.fallback.upsertAnomaly(anomaly),
     );
@@ -189,7 +189,7 @@ export class IndexedDBFleetStore implements FleetStore {
       'upsertGroundStation',
       async () => {
         const db = await this.dbPromise;
-        await db.put('groundStations', station);
+        await db.put('groundStations', cloneForStorage(station));
       },
       () => this.fallback.upsertGroundStation(station),
     );
@@ -212,7 +212,7 @@ export class IndexedDBFleetStore implements FleetStore {
       'upsertEvent',
       async () => {
         const db = await this.dbPromise;
-        await db.put('events', event);
+        await db.put('events', cloneForStorage(event));
       },
       () => this.fallback.upsertEvent(event),
     );
@@ -285,12 +285,12 @@ export class IndexedDBFleetStore implements FleetStore {
           ]);
         }
 
-        for (const fleet of payload.fleets) await db.put('fleets', fleet);
-        for (const tle of payload.customTles) await db.put('customTles', tle);
-        for (const status of payload.opsStatuses) await db.put('opsStatuses', status);
-        for (const anomaly of payload.anomalies) await db.put('anomalies', anomaly);
-        for (const station of payload.groundStations) await db.put('groundStations', station);
-        for (const event of payload.events) await db.put('events', event);
+        for (const fleet of payload.fleets) await db.put('fleets', cloneForStorage(fleet));
+        for (const tle of payload.customTles) await db.put('customTles', cloneForStorage(tle));
+        for (const status of payload.opsStatuses) await db.put('opsStatuses', cloneForStorage(status));
+        for (const anomaly of payload.anomalies) await db.put('anomalies', cloneForStorage(anomaly));
+        for (const station of payload.groundStations) await db.put('groundStations', cloneForStorage(station));
+        for (const event of payload.events) await db.put('events', cloneForStorage(event));
 
         return result;
       },
@@ -312,11 +312,27 @@ export class IndexedDBFleetStore implements FleetStore {
     try {
       return await withTimeout(primary(), DB_OPERATION_TIMEOUT_MS);
     } catch (error) {
-      this.useFallback = true;
-      console.warn(`IndexedDB unavailable during ${label}; using in-memory fleet store.`, error);
+      const timedOut = isTimeoutError(error);
+      if (!timedOut) {
+        this.useFallback = true;
+      }
+      console.warn(
+        timedOut
+          ? `IndexedDB slow during ${label}; using in-memory result for this operation and retrying IndexedDB on the next operation.`
+          : `IndexedDB unavailable during ${label}; using in-memory fleet store.`,
+        error,
+      );
       return fallback();
     }
   }
+}
+
+function isTimeoutError(error: unknown) {
+  return error instanceof Error && error.message.startsWith('IndexedDB operation exceeded');
+}
+
+function cloneForStorage<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function matchesRef(left: FleetMemberRef, right: FleetMemberRef) {

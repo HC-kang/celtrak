@@ -23,11 +23,12 @@ describe('SimulationControls', () => {
     await buttonByText(wrapper, '-30m').trigger('click');
     await buttonByText(wrapper, '+1h').trigger('click');
     await buttonByText(wrapper, '+3h').trigger('click');
+    await buttonByText(wrapper, '20x').trigger('click');
     await buttonByText(wrapper, '300x').trigger('click');
     await buttonByText(wrapper, 'Live').trigger('click');
 
     expect(wrapper.emitted('shift')).toEqual([[-12], [-0.5], [1], [3]]);
-    expect(wrapper.emitted('set-playback-rate')).toEqual([[300]]);
+    expect(wrapper.emitted('set-playback-rate')).toEqual([[20], [300]]);
     expect(wrapper.emitted('reset-live')).toEqual([[]]);
   });
 
