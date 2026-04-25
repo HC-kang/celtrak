@@ -1,5 +1,5 @@
 import * as satellite from 'satellite.js';
-import type { FleetMemberRef, GroundStation, LiveContactLink, PassPrediction, TleRaw } from '@/domain/types';
+import type { FleetMemberRef, GroundStation, LiveContactLink, MapFocusTarget, PassPrediction, TleRaw } from '@/domain/types';
 
 export interface ContactSatellite {
   satelliteRef: FleetMemberRef;
@@ -17,12 +17,15 @@ export function buildLiveContactLinks(input: {
   stations: GroundStation[];
   timestampIso: string;
   passPredictions: PassPrediction[];
+  priorityTarget?: MapFocusTarget | null;
 }): LiveContactLink[] {
   const timestampMs = new Date(input.timestampIso).getTime();
   if (!Number.isFinite(timestampMs)) return [];
 
   const enabledStations = input.stations.filter((station) => station.enabled);
+  const passMap = indexPassPredictions(input.passPredictions);
   const links: LiveContactLink[] = [];
+  let fallbackEstimates = 0;
 
   for (const sat of input.satellites) {
     const satrec = satellite.twoline2satrec(sat.tle.line1, sat.tle.line2);
@@ -31,14 +34,26 @@ export function buildLiveContactLinks(input: {
       const look = createLookSnapshot(satrec, station, new Date(timestampMs));
       if (!look) continue;
 
-      const pairPasses = input.passPredictions
-        .filter((pass) => pass.groundStationId === station.id && sameRef(pass.satelliteRef, sat.satelliteRef))
-        .sort((left, right) => left.aos.localeCompare(right.aos));
+      const pairPasses = passMap.get(`${satelliteId}:${station.id}`) ?? [];
       const activePass = pairPasses.find((pass) => new Date(pass.aos).getTime() <= timestampMs && timestampMs <= new Date(pass.los).getTime());
       const nextPass = pairPasses.find((pass) => new Date(pass.aos).getTime() > timestampMs);
       const visible = look.elevationDeg >= station.elevationMaskDeg;
+      const priorityLink = matchesPriority(input.priorityTarget, satelliteId, station.id);
+      const canUseFallback = priorityLink || fallbackEstimates < 4;
 
       if (visible) {
+        const fallbackCountdown = activePass
+          ? undefined
+          : canUseFallback
+            ? estimateThresholdCountdown({
+                satrec,
+                station,
+                timestampMs,
+                satelliteId,
+                mode: 'LOS',
+              })
+            : undefined;
+        if (!activePass && fallbackCountdown) fallbackEstimates += 1;
         links.push({
           satelliteRef: cloneRef(sat.satelliteRef),
           satelliteId,
@@ -51,11 +66,22 @@ export function buildLiveContactLinks(input: {
           aos: activePass?.aos,
           tca: activePass?.tca,
           los: activePass?.los,
-          countdownSeconds: activePass ? secondsBetween(timestampMs, activePass.los) : undefined,
+          countdownSeconds: activePass ? secondsBetween(timestampMs, activePass.los) : fallbackCountdown?.seconds,
+          countdownIsLowerBound: activePass?.losIsPredictionHorizon || fallbackCountdown?.isLowerBound || undefined,
         });
         continue;
       }
 
+      const fallbackCountdown = !nextPass && canUseFallback
+        ? estimateThresholdCountdown({
+            satrec,
+            station,
+            timestampMs,
+            satelliteId,
+            mode: 'AOS',
+          })
+        : undefined;
+      if (!nextPass && fallbackCountdown) fallbackEstimates += 1;
       if (nextPass) {
         links.push({
           satelliteRef: cloneRef(sat.satelliteRef),
@@ -82,7 +108,9 @@ export function buildLiveContactLinks(input: {
         groundStationName: station.name,
         elevationDeg: look.elevationDeg,
         azimuthDeg: look.azimuthDeg,
-        status: 'AFTER_LOS',
+        status: fallbackCountdown ? 'BEFORE_AOS' : 'AFTER_LOS',
+        countdownSeconds: fallbackCountdown?.seconds,
+        countdownIsLowerBound: fallbackCountdown?.isLowerBound || undefined,
       });
     }
   }
@@ -124,6 +152,73 @@ function compareLinks(left: LiveContactLink, right: LiveContactLink) {
   return (left.countdownSeconds ?? Number.POSITIVE_INFINITY) - (right.countdownSeconds ?? Number.POSITIVE_INFINITY);
 }
 
+function indexPassPredictions(passPredictions: PassPrediction[]) {
+  const map = new Map<string, PassPrediction[]>();
+  for (const pass of passPredictions) {
+    const key = `${satelliteIdForRef(pass.satelliteRef)}:${pass.groundStationId}`;
+    const passes = map.get(key);
+    if (passes) {
+      passes.push(pass);
+    } else {
+      map.set(key, [pass]);
+    }
+  }
+  for (const passes of map.values()) {
+    passes.sort((left, right) => left.aos.localeCompare(right.aos));
+  }
+  return map;
+}
+
+function matchesPriority(target: MapFocusTarget | null | undefined, satelliteId: string, stationId: string) {
+  if (!target) return false;
+  return target.type === 'satellite' ? target.id === satelliteId : target.id === stationId;
+}
+
+function estimateThresholdCountdown({
+  satrec,
+  station,
+  timestampMs,
+  satelliteId,
+  mode,
+}: {
+  satrec: satellite.SatRec;
+  station: GroundStation;
+  timestampMs: number;
+  satelliteId: string;
+  mode: 'LOS' | 'AOS';
+}) {
+  const cacheKey = `${mode}:${satelliteId}:${station.id}:${station.elevationMaskDeg}:${Math.floor(timestampMs / 60_000)}`;
+  const cached = thresholdEstimateCache.get(cacheKey);
+  if (cached) return cached;
+
+  const maxMinutes = 24 * 60;
+  const stepMs = mode === 'LOS' ? 60_000 : 120_000;
+  const startedVisible = mode === 'LOS';
+  let result: ThresholdEstimate | null = null;
+
+  for (let elapsedMs = stepMs; elapsedMs <= maxMinutes * 60_000; elapsedMs += stepMs) {
+    const look = createLookSnapshot(satrec, station, new Date(timestampMs + elapsedMs));
+    if (!look) continue;
+    const visible = look.elevationDeg >= station.elevationMaskDeg;
+    if (startedVisible ? !visible : visible) {
+      result = { seconds: Math.max(0, Math.round(elapsedMs / 1000)) };
+      break;
+    }
+  }
+
+  if (!result && mode === 'LOS') {
+    result = { seconds: maxMinutes * 60, isLowerBound: true };
+  }
+
+  if (result) {
+    thresholdEstimateCache.set(cacheKey, result);
+    if (thresholdEstimateCache.size > THRESHOLD_ESTIMATE_CACHE_MAX) {
+      thresholdEstimateCache.clear();
+    }
+  }
+  return result;
+}
+
 function secondsBetween(fromMs: number, toIso: string) {
   const toMs = new Date(toIso).getTime();
   if (!Number.isFinite(toMs)) return undefined;
@@ -143,3 +238,11 @@ function cloneRef(refItem: FleetMemberRef): FleetMemberRef {
 function radiansToDegrees(value: number) {
   return (value * 180) / Math.PI;
 }
+
+interface ThresholdEstimate {
+  seconds: number;
+  isLowerBound?: boolean;
+}
+
+const THRESHOLD_ESTIMATE_CACHE_MAX = 900;
+const thresholdEstimateCache = new Map<string, ThresholdEstimate>();

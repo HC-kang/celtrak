@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import * as satellite from 'satellite.js';
 import type { CatalogEntry, GroundStation, LiveContactLink, MapFocusTarget } from '@/domain/types';
 import { formatTimestamp } from '@/lib/format';
+import { getSubsolarPoint } from '@/lib/solarTerminator';
 
 const props = defineProps<{
   satellites: CatalogEntry[];
@@ -62,6 +63,8 @@ let globeLayer: THREE.Group | null = null;
 let satelliteLayer: THREE.Group | null = null;
 let stationLayer: THREE.Group | null = null;
 let contactLayer: THREE.Group | null = null;
+let nightShadeMaterial: THREE.ShaderMaterial | null = null;
+let sunlight: THREE.DirectionalLight | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let frameHandle = 0;
 let timer: number | null = null;
@@ -75,6 +78,7 @@ let pinchState: GlobePinchState | null = null;
 const activePointers = new Map<number, PointerSnapshot>();
 const raycaster = new THREE.Raycaster();
 const pointerVector = new THREE.Vector2();
+const sunDirectionLocal = new THREE.Vector3(0, 0, 1);
 
 const trackableCount = computed(() => props.satellites.filter((entry) => Boolean(entry.tle)).length);
 const renderLimit = computed(() => (props.dataSaver ? 16 : 44));
@@ -177,6 +181,15 @@ function buildGlobe() {
   clouds.name = 'cloudLayer';
   globeLayer.add(clouds);
 
+  nightShadeMaterial = createNightShadeMaterial();
+  const nightShade = new THREE.Mesh(
+    new THREE.SphereGeometry(EARTH_RADIUS + 0.032, props.dataSaver ? 48 : 96, props.dataSaver ? 32 : 64),
+    nightShadeMaterial,
+  );
+  nightShade.name = 'nightShade';
+  nightShade.renderOrder = 4;
+  globeLayer.add(nightShade);
+
   const atmosphere = new THREE.Mesh(
     new THREE.SphereGeometry(EARTH_RADIUS + 0.18, props.dataSaver ? 48 : 96, props.dataSaver ? 32 : 64),
     new THREE.MeshBasicMaterial({
@@ -190,27 +203,65 @@ function buildGlobe() {
   atmosphere.name = 'atmosphere';
   globeLayer.add(atmosphere);
 
-  const terminatorGlow = new THREE.Mesh(
-    new THREE.SphereGeometry(EARTH_RADIUS + 0.045, props.dataSaver ? 32 : 72, props.dataSaver ? 20 : 44),
-    new THREE.MeshBasicMaterial({
-      color: '#0070cc',
-      transparent: true,
-      opacity: 0.06,
-      wireframe: true,
-    }),
-  );
-  terminatorGlow.name = 'terminatorGlow';
-  globeLayer.add(terminatorGlow);
-
   globeLayer.add(createGraticule(EARTH_RADIUS + 0.012));
   globeLayer.add(createOrbitReferenceRings());
 
   const ambient = new THREE.AmbientLight('#8fb9ff', 0.72);
-  const sunlight = new THREE.DirectionalLight('#ffffff', 3.1);
-  sunlight.position.set(-4.8, 5.2, 6.4);
+  sunlight = new THREE.DirectionalLight('#ffffff', 3.1);
   const rimLight = new THREE.DirectionalLight('#1eaedb', 1.65);
   rimLight.position.set(4, -1.4, -4.5);
-  scene.add(ambient, sunlight, rimLight);
+  scene.add(ambient, sunlight, sunlight.target, rimLight);
+  updateSunLighting();
+}
+
+function createNightShadeMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      sunDirection: { value: sunDirectionLocal.clone() },
+      nightOpacity: { value: props.dataSaver ? 0.32 : 0.42 },
+    },
+    vertexShader: `
+      varying vec3 vNormal;
+      void main() {
+        vNormal = normalize(normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 sunDirection;
+      uniform float nightOpacity;
+      varying vec3 vNormal;
+      void main() {
+        float solarDot = dot(normalize(vNormal), normalize(sunDirection));
+        float night = 1.0 - smoothstep(-0.075, 0.105, solarDot);
+        float terminator = smoothstep(-0.18, 0.18, solarDot);
+        vec3 color = mix(vec3(0.0, 0.012, 0.04), vec3(0.0, 0.04, 0.085), terminator);
+        gl_FragColor = vec4(color, night * nightOpacity);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+  });
+}
+
+function updateSunLighting() {
+  const timestamp = new Date(props.orbitTimeIso);
+  if (!Number.isFinite(timestamp.getTime())) return;
+  const subsolar = getSubsolarPoint(timestamp);
+  sunDirectionLocal.copy(latLonToVector(subsolar.latDeg, subsolar.lonDeg, 1).normalize());
+  nightShadeMaterial?.uniforms.sunDirection.value.copy(sunDirectionLocal);
+  applySunLightDirection();
+}
+
+function applySunLightDirection() {
+  if (!sunlight) return;
+  const worldDirection = sunDirectionLocal.clone();
+  if (earthRig) {
+    worldDirection.applyEuler(earthRig.rotation);
+  }
+  sunlight.position.copy(worldDirection.multiplyScalar(6));
+  sunlight.target.position.set(0, 0, 0);
+  sunlight.target.updateMatrixWorld();
 }
 
 function updateSatellites() {
@@ -1171,6 +1222,7 @@ function setGlobeRotation(next: Partial<typeof INITIAL_EARTH_ROTATION>) {
 
 function applyGlobeRotation() {
   earthRig?.rotation.set(globeRotation.x, globeRotation.y, globeRotation.z);
+  applySunLightDirection();
 }
 
 function animateGlobeRotationTo(targetRotation: typeof INITIAL_EARTH_ROTATION) {
@@ -1381,6 +1433,7 @@ watch(
 watch(
   () => props.orbitTimeIso,
   () => {
+    updateSunLighting();
     if (props.orbitMode === 'simulation') {
       updateSatellites();
       updateContactLinks();

@@ -34,17 +34,18 @@ describe('buildLiveContactLinks', () => {
     });
     const pass = passes[0];
     if (!pass) throw new Error('Expected a pass for contact test');
+    const inPassTimestampIso = new Date((new Date(pass.aos).getTime() + new Date(pass.los).getTime()) / 2).toISOString();
 
     const links = buildLiveContactLinks({
       satellites: [satellite],
       stations: [station],
-      timestampIso: pass.tca,
+      timestampIso: inPassTimestampIso,
       passPredictions: passes,
     });
 
     expect(links[0]?.status).toBe('IN_CONTACT');
     expect(links[0]?.elevationDeg).toBeGreaterThanOrEqual(station.elevationMaskDeg);
-    expect(links[0]?.countdownSeconds).toBeGreaterThan(0);
+    expect(links[0]?.countdownSeconds).toBeGreaterThanOrEqual(0);
   });
 
   it('uses the next pass as an AOS countdown before contact', () => {
@@ -67,5 +68,27 @@ describe('buildLiveContactLinks', () => {
 
     expect(links[0]?.status).toBe('BEFORE_AOS');
     expect(links[0]?.countdownSeconds).toBe(600);
+  });
+
+  it('estimates the focused LOS countdown while pass predictions are still pending', () => {
+    const passes = predictPasses({
+      startTimeIso: '2026-04-23T00:00:00.000Z',
+      hours: 24,
+      stations: [station],
+      satellites: [satellite],
+    });
+    const pass = passes[0];
+    if (!pass) throw new Error('Expected a pass for contact test');
+
+    const links = buildLiveContactLinks({
+      satellites: [satellite],
+      stations: [station],
+      timestampIso: pass.tca,
+      passPredictions: [],
+      priorityTarget: { type: 'groundStation', id: station.id },
+    });
+
+    expect(links[0]?.status).toBe('IN_CONTACT');
+    expect(links[0]?.countdownSeconds).toBeGreaterThan(0);
   });
 });

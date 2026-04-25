@@ -74,6 +74,7 @@ const contactLinks = computed(() =>
     stations: store.groundStations,
     timestampIso: displayedOrbitTimeIso.value,
     passPredictions: store.passPredictions,
+    priorityTarget: focusedTarget.value,
   }),
 );
 
@@ -349,17 +350,18 @@ function clearFocusedTarget() {
   focusedTarget.value = null;
 }
 
-function formatCountdown(seconds: number | undefined) {
-  if (seconds === undefined) return '계산 중';
+function formatCountdown(seconds: number | undefined, lowerBound = false) {
+  if (seconds === undefined) return '예측 대기';
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const remainingSeconds = seconds % 60;
-  return [hours, minutes, remainingSeconds].map((value) => value.toString().padStart(2, '0')).join(':');
+  const value = [hours, minutes, remainingSeconds].map((item) => item.toString().padStart(2, '0')).join(':');
+  return lowerBound ? `${value}+` : value;
 }
 
 function linkStatusLabel(link: LiveContactLink) {
-  if (link.status === 'IN_CONTACT') return `LOS까지 ${formatCountdown(link.countdownSeconds)}`;
-  if (link.status === 'BEFORE_AOS') return `AOS까지 ${formatCountdown(link.countdownSeconds)}`;
+  if (link.status === 'IN_CONTACT') return `LOS까지 ${formatCountdown(link.countdownSeconds, link.countdownIsLowerBound)}`;
+  if (link.status === 'BEFORE_AOS') return `AOS까지 ${formatCountdown(link.countdownSeconds, link.countdownIsLowerBound)}`;
   return '가시권 밖';
 }
 

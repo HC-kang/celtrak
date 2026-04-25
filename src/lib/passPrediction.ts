@@ -53,6 +53,7 @@ export function predictPriorityPasses(input: PassPredictionInput): PassPredictio
     stations,
     hours: input.hours,
     startTimeIso: input.startTimeIso,
+    stepMinutes: 1,
   }).sort(comparePasses);
 }
 
@@ -61,16 +62,17 @@ function predictPassesForPairs({
   stations,
   hours,
   startTimeIso,
+  stepMinutes = 3,
 }: {
   satellites: PredictableSatellite[];
   stations: GroundStation[];
   hours: number;
   startTimeIso?: string;
+  stepMinutes?: number;
 }): PassPrediction[] {
   const results: PassPrediction[] = [];
   const start = startTimeIso ? new Date(startTimeIso) : new Date();
   const end = new Date(start.getTime() + hours * 60 * 60 * 1000);
-  const stepMinutes = 3;
 
   for (const sat of satellites) {
     const satrec = satellite.twoline2satrec(sat.tle.line1, sat.tle.line2);
@@ -84,6 +86,7 @@ function predictPassesForPairs({
       let inPass = false;
       let passStart: ReturnType<typeof createLookSnapshot> | null = null;
       let peak: ReturnType<typeof createLookSnapshot> | null = null;
+      let lastVisible: ReturnType<typeof createLookSnapshot> | null = null;
 
       while (currentTime <= end) {
         const snapshot = createLookSnapshot(satrec, observerGd, currentTime);
@@ -95,27 +98,47 @@ function predictPassesForPairs({
           } else if ((peak?.elevationDeg ?? 0) < snapshot.elevationDeg) {
             peak = snapshot;
           }
+          lastVisible = snapshot;
         } else if (inPass && passStart && peak) {
-          const lastVisible = createLookSnapshot(satrec, observerGd, currentTime) ?? peak;
+          const passEnd = lastVisible ?? peak;
           results.push({
             origin: 'DERIVED',
             satelliteRef: sat.satelliteRef,
             groundStationId: station.id,
             aos: passStart.timestamp.toISOString(),
             tca: peak.timestamp.toISOString(),
-            los: lastVisible.timestamp.toISOString(),
+            los: passEnd.timestamp.toISOString(),
             maxElevationDeg: peak.elevationDeg,
             aosAzimuthDeg: passStart.azimuthDeg,
-            losAzimuthDeg: lastVisible.azimuthDeg,
+            losAzimuthDeg: passEnd.azimuthDeg,
             illuminationAtTca: 'SUNLIT',
             computedAt: new Date().toISOString(),
           });
           inPass = false;
           passStart = null;
           peak = null;
+          lastVisible = null;
         }
 
         currentTime = new Date(currentTime.getTime() + stepMinutes * 60 * 1000);
+      }
+
+      if (inPass && passStart && peak) {
+        const passEnd = lastVisible ?? peak;
+        results.push({
+          origin: 'DERIVED',
+          satelliteRef: sat.satelliteRef,
+          groundStationId: station.id,
+          aos: passStart.timestamp.toISOString(),
+          tca: peak.timestamp.toISOString(),
+          los: passEnd.timestamp.toISOString(),
+          losIsPredictionHorizon: true,
+          maxElevationDeg: peak.elevationDeg,
+          aosAzimuthDeg: passStart.azimuthDeg,
+          losAzimuthDeg: passEnd.azimuthDeg,
+          illuminationAtTca: 'SUNLIT',
+          computedAt: new Date().toISOString(),
+        });
       }
     }
   }

@@ -201,6 +201,7 @@ export interface PassPrediction extends TimestampedOrigin {
   aos: string;
   tca: string;
   los: string;
+  losIsPredictionHorizon?: boolean;
   maxElevationDeg: number;
   aosAzimuthDeg: number;
   losAzimuthDeg: number;
@@ -227,6 +228,7 @@ export interface LiveContactLink {
   tca?: string;
   los?: string;
   countdownSeconds?: number;
+  countdownIsLowerBound?: boolean;
 }
 
 export interface ImportReport {
