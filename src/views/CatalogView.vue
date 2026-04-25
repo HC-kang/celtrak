@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
 import CatalogCard from '@/components/CatalogCard.vue';
 import LoadingState from '@/components/LoadingState.vue';
@@ -47,7 +47,11 @@ const filtered = computed(() =>
 const visibleEntries = computed(() => filtered.value.slice(0, visibleLimit.value));
 const hasMore = computed(() => visibleEntries.value.length < filtered.value.length);
 const selectedFleetName = computed(() => store.selectedFleet?.name ?? 'No fleet selected');
-const catalogLoading = computed(() => store.loading && !store.catalog.length);
+const catalogLoading = computed(() => store.catalogIndexLoading && !store.catalogIndexLoaded);
+
+onMounted(() => {
+  void store.loadCatalogIndex();
+});
 
 watch(pageSize, (size) => {
   visibleLimit.value = size;
@@ -116,7 +120,7 @@ async function toggleTracking(entry: CatalogEntry) {
         </select>
       </div>
       <p v-if="catalogLoading" class="supporting-text">
-        CelesTrak active catalog를 불러오는 중입니다. 네트워크 상태에 따라 몇 초 정도 걸릴 수 있습니다.
+        서버 캐시에서 CelesTrak active catalog를 불러오는 중입니다. 첫 캐시 생성 시에는 몇 초 정도 걸릴 수 있습니다.
       </p>
       <p v-else class="supporting-text">
         {{ formatNumber(store.catalog.length) }} indexed · {{ formatNumber(filtered.length) }} matched ·

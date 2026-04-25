@@ -1,6 +1,7 @@
 interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
   CACHE_TTL_SECONDS?: string;
+  CATALOG_CACHE_TTL_SECONDS?: string;
 }
 
 type DataOrigin = 'OSINT' | 'DERIVED' | 'USER' | 'STALE';
@@ -37,9 +38,14 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v3';
+const API_CACHE_VERSION = 'v4';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
+const MAX_CATALOG_NUMBER_LOOKUP = 100;
+const DEFAULT_API_CACHE_TTL_SECONDS = 900;
+// CelesTrak GP/SATCAT does not provide usable expiry headers and asks clients not to refetch more than once per 2 hours.
+const DEFAULT_CATALOG_CACHE_TTL_SECONDS = 9_000;
+const CATALOG_ORIGIN_REFRESH_SECONDS = 7_200;
 const TLE_FETCH_TIMEOUT_MS = 20_000;
 const SATCAT_FETCH_TIMEOUT_MS = 20_000;
 
@@ -78,54 +84,183 @@ export default {
 
     return env.ASSETS.fetch(request);
   },
+  async scheduled(_controller: unknown, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(prewarmCatalogCache(env));
+  },
 };
 
 async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
   const url = new URL(request.url);
-  const ttl = Number(env.CACHE_TTL_SECONDS ?? 900);
-  const cacheUrl = new URL(request.url);
-  cacheUrl.pathname = `/__api-cache/${API_CACHE_VERSION}${url.pathname}`;
-  const cacheKey = new Request(cacheUrl.toString(), request);
+  const cachePolicy = cachePolicyFor(url, env);
+  const cacheKey = createApiCacheKey(url);
 
   if (request.method !== 'GET') {
     return json({ error: 'Method not allowed' }, 405);
   }
 
   const cached = await caches.default.match(cacheKey);
-  if (cached) return withCacheControl(cached, 'no-cache');
+  if (cached) {
+    if (shouldRefreshCached(cached, cachePolicy.refreshAfterSeconds)) {
+      ctx.waitUntil(refreshApiCache(url, cacheKey, cachePolicy));
+    }
+    return withCacheControl(cached, 'no-cache');
+  }
 
   let response: Response;
   try {
-    if (url.pathname === '/api/health') {
-      response = json({ ok: true, service: 'celestrak-orbit-lab-pro', timestamp: new Date().toISOString() });
-    } else if (url.pathname === '/api/celestrak/catalog' || url.pathname === '/api/celestrak/gp') {
-      response = json(await getCatalog(url));
-    } else if (url.pathname === '/api/swpc/summary') {
-      response = json(await getSpaceWeatherSummary());
-    } else if (url.pathname === '/api/celestrak/socrates') {
-      response = json(createConjunctionFallback('SOCRATES API parser pending'));
-    } else if (url.pathname === '/api/celestrak/decay') {
-      response = json(createDecayFallback('Decay feed parser pending'));
-    } else if (url.pathname === '/api/ground-stations') {
-      response = json(createGroundStations());
-    } else {
-      response = json({ error: 'Not found' }, 404);
-    }
+    response = await buildApiResponse(url);
   } catch (error) {
     response = json({ error: 'API upstream failed', detail: error instanceof Error ? error.message : 'unknown' }, 502);
   }
 
   if (response.ok) {
-    ctx.waitUntil(caches.default.put(cacheKey, withCacheControl(response.clone(), `public, max-age=${ttl}, stale-while-revalidate=${ttl * 4}`)));
+    ctx.waitUntil(putApiCache(cacheKey, response.clone(), cachePolicy));
     response.headers.set('cache-control', 'no-cache');
   }
 
   return response;
 }
 
+async function buildApiResponse(url: URL) {
+  if (url.pathname === '/api/health') {
+    return json({ ok: true, service: 'celestrak-orbit-lab-pro', timestamp: new Date().toISOString() });
+  }
+  if (url.pathname === '/api/celestrak/catalog' || url.pathname === '/api/celestrak/gp') {
+    return json(await getCatalog(url));
+  }
+  if (url.pathname === '/api/swpc/summary') {
+    return json(await getSpaceWeatherSummary());
+  }
+  if (url.pathname === '/api/celestrak/socrates') {
+    return json(createConjunctionFallback('SOCRATES API parser pending'));
+  }
+  if (url.pathname === '/api/celestrak/decay') {
+    return json(createDecayFallback('Decay feed parser pending'));
+  }
+  if (url.pathname === '/api/ground-stations') {
+    return json(createGroundStations());
+  }
+  return json({ error: 'Not found' }, 404);
+}
+
+async function prewarmCatalogCache(env: Env) {
+  const url = new URL('https://celtrak-cache.internal/api/celestrak/catalog?group=active&limit=20000');
+  const cacheKey = createApiCacheKey(url);
+  const cachePolicy = cachePolicyFor(url, env);
+  const cached = await caches.default.match(cacheKey);
+  if (cached && !shouldRefreshCached(cached, cachePolicy.refreshAfterSeconds)) return;
+  await refreshApiCache(url, cacheKey, cachePolicy);
+}
+
+async function refreshApiCache(url: URL, cacheKey: Request, cachePolicy: ApiCachePolicy) {
+  try {
+    const response = await buildApiResponse(url);
+    if (response.ok) {
+      await putApiCache(cacheKey, response, cachePolicy);
+    }
+  } catch (error) {
+    console.warn('API cache refresh failed', error);
+  }
+}
+
+async function putApiCache(cacheKey: Request, response: Response, cachePolicy: ApiCachePolicy) {
+  const cacheResponse = withCacheControl(
+    response,
+    `public, max-age=${cachePolicy.ttlSeconds}, stale-while-revalidate=${cachePolicy.ttlSeconds * 4}`,
+  );
+  cacheResponse.headers.set('x-cache-created-at', String(Date.now()));
+  await caches.default.put(cacheKey, cacheResponse);
+}
+
+interface ApiCachePolicy {
+  ttlSeconds: number;
+  refreshAfterSeconds: number;
+}
+
+function cachePolicyFor(url: URL, env: Env): ApiCachePolicy {
+  if (isCatalogPath(url)) {
+    const ttlSeconds = secondsFromEnv(env.CATALOG_CACHE_TTL_SECONDS, DEFAULT_CATALOG_CACHE_TTL_SECONDS);
+    return {
+      ttlSeconds,
+      refreshAfterSeconds: Math.min(CATALOG_ORIGIN_REFRESH_SECONDS, ttlSeconds),
+    };
+  }
+
+  const ttlSeconds = secondsFromEnv(env.CACHE_TTL_SECONDS, DEFAULT_API_CACHE_TTL_SECONDS);
+  return {
+    ttlSeconds,
+    refreshAfterSeconds: ttlSeconds,
+  };
+}
+
+function createApiCacheKey(url: URL) {
+  const cacheUrl = new URL('https://celtrak-cache.internal');
+  cacheUrl.pathname = `/__api-cache/${API_CACHE_VERSION}${url.pathname}`;
+
+  if (isCatalogPath(url)) {
+    const catalogNumbers = catalogNumbersFromUrl(url);
+    if (catalogNumbers.length) {
+      cacheUrl.searchParams.set('catnr', catalogNumbers.join(','));
+    } else {
+      cacheUrl.searchParams.set('group', catalogGroupFromUrl(url) ?? 'all');
+      cacheUrl.searchParams.set('limit', String(catalogLimitFromUrl(url)));
+    }
+  } else {
+    appendSortedSearchParams(cacheUrl, url.searchParams);
+  }
+
+  return new Request(cacheUrl.toString(), { method: 'GET' });
+}
+
+function appendSortedSearchParams(target: URL, params: URLSearchParams) {
+  const entries: Array<[string, string]> = [];
+  params.forEach((value, key) => entries.push([key, value]));
+  entries.sort((left, right) => left[0].localeCompare(right[0]) || left[1].localeCompare(right[1]));
+  for (const [key, value] of entries) {
+    target.searchParams.append(key, value);
+  }
+}
+
+function shouldRefreshCached(response: Response, refreshAfterSeconds: number) {
+  if (refreshAfterSeconds <= 0) return false;
+  const createdAt = Number(response.headers.get('x-cache-created-at'));
+  if (!Number.isFinite(createdAt)) return true;
+  return Date.now() - createdAt >= refreshAfterSeconds * 1000;
+}
+
+function isCatalogPath(url: URL) {
+  return url.pathname === '/api/celestrak/catalog' || url.pathname === '/api/celestrak/gp';
+}
+
+function secondsFromEnv(value: string | undefined, fallback: number) {
+  return clampNumber(Number(value), 60, 86_400, fallback);
+}
+
+function catalogGroupFromUrl(url: URL) {
+  return cleanString(url.searchParams.get('group') ?? url.searchParams.get('GROUP'))?.toLowerCase();
+}
+
+function catalogLimitFromUrl(url: URL) {
+  return clampNumber(Number(url.searchParams.get('limit') ?? url.searchParams.get('LIMIT')), 1, MAX_CATALOG_LIMIT, DEFAULT_CATALOG_LIMIT);
+}
+
+function catalogNumbersFromUrl(url: URL) {
+  const values = ['catnr', 'CATNR', 'catalogNumber', 'catalogNumbers'].flatMap((key) => url.searchParams.getAll(key));
+  const numbers = values
+    .flatMap((value) => value.split(','))
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0);
+  return [...new Set(numbers)].sort((left, right) => left - right);
+}
+
 async function getCatalog(url: URL): Promise<CatalogEntry[]> {
-  const requestedGroup = url.searchParams.get('group')?.toLowerCase();
-  const limit = clampNumber(Number(url.searchParams.get('limit')), 1, MAX_CATALOG_LIMIT, DEFAULT_CATALOG_LIMIT);
+  const catalogNumbers = catalogNumbersFromUrl(url);
+  if (catalogNumbers.length) {
+    return getCatalogByCatalogNumbers(catalogNumbers.slice(0, MAX_CATALOG_NUMBER_LOOKUP));
+  }
+
+  const requestedGroup = catalogGroupFromUrl(url);
+  const limit = catalogLimitFromUrl(url);
   const groups = requestedGroup ? CELESTRAK_GROUPS.filter((group) => group.key === requestedGroup || group.label.toLowerCase() === requestedGroup) : CELESTRAK_GROUPS;
   const selectedGroups = groups.length ? groups : CELESTRAK_GROUPS;
   const fetchedAt = new Date().toISOString();
@@ -145,10 +280,45 @@ async function getCatalog(url: URL): Promise<CatalogEntry[]> {
   return dedupeCatalog(entries).slice(0, limit);
 }
 
+async function getCatalogByCatalogNumbers(catalogNumbers: number[]): Promise<CatalogEntry[]> {
+  const fetchedAt = new Date().toISOString();
+  const satcatResults = await Promise.allSettled(catalogNumbers.map((catalogNumber) => fetchSatcatRecord(catalogNumber)));
+  const satcatByCatalog = new Map<number, CelestrakSatcatRecord>();
+  for (const result of satcatResults) {
+    if (result.status !== 'fulfilled') continue;
+    const catalogNumber = Number(result.value.NORAD_CAT_ID);
+    if (Number.isFinite(catalogNumber)) {
+      satcatByCatalog.set(catalogNumber, result.value);
+    }
+  }
+
+  const tleResults = await Promise.allSettled(
+    catalogNumbers.map((catalogNumber) =>
+      fetchTleByCatalogNumber(catalogNumber).then((tle) => parseTleCatalog(tle, 'Tracked', fetchedAt, satcatByCatalog)),
+    ),
+  );
+  const entries = tleResults.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+  if (!entries.length) {
+    const failures = tleResults
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => (result.reason instanceof Error ? result.reason.message : 'unknown'))
+      .join('; ');
+    throw new Error(`CelesTrak catalog lookup unavailable${failures ? `: ${failures}` : ''}`);
+  }
+  return dedupeCatalog(entries);
+}
+
 async function fetchTleGroup(group: string) {
   const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${encodeURIComponent(group)}&FORMAT=tle`;
   const response = await fetchWithTimeout(url, TLE_FETCH_TIMEOUT_MS);
   if (!response.ok) throw new Error(`CelesTrak ${group} ${response.status}`);
+  return response.text();
+}
+
+async function fetchTleByCatalogNumber(catalogNumber: number) {
+  const url = `https://celestrak.org/NORAD/elements/gp.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=tle`;
+  const response = await fetchWithTimeout(url, TLE_FETCH_TIMEOUT_MS);
+  if (!response.ok) throw new Error(`CelesTrak CATNR=${catalogNumber} ${response.status}`);
   return response.text();
 }
 
@@ -162,6 +332,16 @@ async function fetchSatcatRecords(group: string) {
     }
   }
   return records;
+}
+
+async function fetchSatcatRecord(catalogNumber: number) {
+  const rows = await fetchJson<CelestrakSatcatRecord[]>(
+    `https://celestrak.org/satcat/records.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=JSON`,
+    SATCAT_FETCH_TIMEOUT_MS,
+  );
+  const record = rows[0];
+  if (!record) throw new Error(`CelesTrak SATCAT CATNR=${catalogNumber} empty`);
+  return record;
 }
 
 function parseTleCatalog(text: string, group: string, fetchedAt: string, satcatByCatalog = new Map<number, CelestrakSatcatRecord>()): CatalogEntry[] {
