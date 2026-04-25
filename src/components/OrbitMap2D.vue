@@ -29,6 +29,9 @@ const TRAIL_START_MINUTES = -45;
 const TRAIL_END_MINUTES = 120;
 const FOCUS_ANIMATION_MS = 560;
 const CANVAS_DYNAMIC_LAYER_THRESHOLD = 20;
+const SATELLITE_LABEL_WIDTH = 126;
+const SATELLITE_LABEL_HEIGHT = 32;
+const SATELLITE_LABEL_RADIUS = 8;
 const TRACK_COLORS = ['#0070cc', '#1eaedb', '#53b1ff', '#ffffff', '#d53b00', '#1883fd'];
 type SatRec = ReturnType<typeof satellite.twoline2satrec>;
 
@@ -119,6 +122,7 @@ const mapViewBox = computed(() => {
   return `${view.x.toFixed(2)} ${view.y.toFixed(2)} ${view.width.toFixed(2)} ${view.height.toFixed(2)}`;
 });
 const zoomPercent = computed(() => `${zoom.value.toFixed(1)}x`);
+const labelMapScale = computed(() => clamp(currentView.value.width / viewportSize.value.width, 0.18, 1));
 const usesCanvasDynamicLayer = computed(() => plotted.value.length > CANVAS_DYNAMIC_LAYER_THRESHOLD);
 const trailStepMinutes = computed(() => {
   if (props.dataSaver) return 10;
@@ -136,7 +140,7 @@ const plotted = computed(() =>
       if (!point) return null;
       const mapPoint = toMapPoint(point.lon, point.lat);
       const trail = props.dataSaver ? [] : buildTrail(satrec, displayedTime.value);
-      const labelBounds = satelliteLabelBounds(mapPoint);
+      const labelBounds = satelliteLabelBounds(mapPoint, labelMapScale.value);
       return {
         id: `catalog:${entry.satcat.catalogNumber}`,
         entry,
@@ -541,13 +545,17 @@ function formatCoordinate(value: number, axis: 'lat' | 'lon') {
   return `${Math.abs(value).toFixed(1)}°${direction}`;
 }
 
-function satelliteLabelBounds(point: MapPoint): MapBounds {
+function satelliteLabelBounds(point: MapPoint, scale = labelMapScale.value): MapBounds {
   const worldLeft = Math.floor(point.x / MAP_WIDTH) * MAP_WIDTH;
+  const width = SATELLITE_LABEL_WIDTH * scale;
+  const height = SATELLITE_LABEL_HEIGHT * scale;
+  const offsetX = 18 * scale;
+  const offsetY = 28 * scale;
   return {
-    x: Math.min(point.x + 18, worldLeft + MAP_WIDTH - 155),
-    y: Math.max(point.y - 28, 38),
-    width: 138,
-    height: 38,
+    x: Math.min(point.x + offsetX, worldLeft + MAP_WIDTH - width - 18 * scale),
+    y: Math.max(point.y - offsetY, 38 * scale),
+    width,
+    height,
   };
 }
 
@@ -574,7 +582,7 @@ function focusNearestMapTarget(clientX: number, clientY: number) {
   const hitRadius = Math.max((currentView.value.width / viewportSize.value.width) * 32, 14);
   const satelliteLabelHit = plotted.value.find((item) => {
     const shiftedPoint = { ...item.point, x: nearestWrappedX(item.point.x, point.x) };
-    return boundsContains(satelliteLabelBounds(shiftedPoint), point);
+    return boundsContains(satelliteLabelBounds(shiftedPoint, labelMapScale.value), point);
   });
   if (satelliteLabelHit) {
     emit('focus-target', { type: 'satellite', id: satelliteLabelHit.id });
@@ -848,14 +856,14 @@ function drawCanvasSatelliteLabel(
   drawRoundedRect(context, topLeft.x, topLeft.y, width, height, Math.min(12, height / 2));
   context.fill();
   context.stroke();
-  context.font = '700 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  context.font = '700 10.5px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   context.textAlign = 'left';
   context.textBaseline = 'middle';
   context.fillStyle = '#f8fafc';
-  context.fillText(item.label, topLeft.x + 12, topLeft.y + 16);
-  context.font = '500 10px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  context.fillText(item.label, topLeft.x + 10, topLeft.y + 13);
+  context.font = '500 8.5px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   context.fillStyle = 'rgba(203, 213, 225, 0.86)';
-  context.fillText(`${formatCoordinate(item.geo.lat, 'lat')} · ${formatCoordinate(item.geo.lon, 'lon')}`, topLeft.x + 12, topLeft.y + 30);
+  context.fillText(`${formatCoordinate(item.geo.lat, 'lat')} · ${formatCoordinate(item.geo.lon, 'lon')}`, topLeft.x + 10, topLeft.y + 24);
   context.restore();
 }
 
@@ -1277,10 +1285,10 @@ watch(
           />
           <circle :cx="item.point.x" :cy="item.point.y" r="19" class="orbit-map__satellite-ping" :stroke="item.color" />
           <circle :cx="item.point.x" :cy="item.point.y" r="6.5" class="orbit-map__satellite-core" :fill="item.color" />
-          <g class="orbit-map__satellite-label" :transform="`translate(${item.labelBounds.x} ${item.labelBounds.y})`">
-            <rect width="138" height="38" rx="12" />
-            <text x="12" y="16">{{ item.label }}</text>
-            <text x="12" y="30">{{ formatCoordinate(item.geo.lat, 'lat') }} · {{ formatCoordinate(item.geo.lon, 'lon') }}</text>
+          <g class="orbit-map__satellite-label" :transform="`translate(${item.labelBounds.x} ${item.labelBounds.y}) scale(${labelMapScale})`">
+            <rect :width="SATELLITE_LABEL_WIDTH" :height="SATELLITE_LABEL_HEIGHT" :rx="SATELLITE_LABEL_RADIUS" />
+            <text x="10" y="13">{{ item.label }}</text>
+            <text x="10" y="24">{{ formatCoordinate(item.geo.lat, 'lat') }} · {{ formatCoordinate(item.geo.lon, 'lon') }}</text>
           </g>
         </g>
       </g>

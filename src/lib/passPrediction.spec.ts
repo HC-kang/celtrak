@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { predictPasses } from '@/lib/passPrediction';
+import { predictPasses, predictPriorityPasses } from '@/lib/passPrediction';
 
 describe('predictPasses', () => {
   it('uses the provided simulation start time', () => {
@@ -66,5 +66,49 @@ describe('predictPasses', () => {
     });
 
     expect(new Set(passes.map((pass) => pass.groundStationId)).size).toBe(stations.length);
+  });
+
+  it('can compute a focused ground station subset first', () => {
+    const passes = predictPriorityPasses({
+      startTimeIso: '2026-04-23T00:00:00.000Z',
+      hours: 24,
+      priorityTarget: { type: 'groundStation', id: 'gs-seoul' },
+      stations: [
+        {
+          id: 'gs-seoul',
+          name: 'Seoul Ops',
+          latDeg: 37.5665,
+          lonDeg: 126.978,
+          altitudeM: 38,
+          elevationMaskDeg: 10,
+          enabled: true,
+          schemaVersion: 1,
+        },
+        {
+          id: 'gs-houston',
+          name: 'Houston Backup',
+          latDeg: 29.7604,
+          lonDeg: -95.3698,
+          altitudeM: 13,
+          elevationMaskDeg: 10,
+          enabled: true,
+          schemaVersion: 1,
+        },
+      ],
+      satellites: [
+        {
+          satelliteRef: { refType: 'catalog', catalogNumber: 25544, tags: [] },
+          name: 'ISS',
+          tle: {
+            format: 'TLE',
+            line1: '1 25544U 98067A   24110.55260417  .00016717  00000+0  10270-3 0  9996',
+            line2: '2 25544  51.6415 162.1898 0004620 250.2941 232.6818 15.50376377446559',
+          },
+        },
+      ],
+    });
+
+    expect(passes.length).toBeGreaterThan(0);
+    expect(new Set(passes.map((pass) => pass.groundStationId))).toEqual(new Set(['gs-seoul']));
   });
 });

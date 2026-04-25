@@ -46,11 +46,20 @@ describe('createPassPredictionInput', () => {
       },
     ]) as GroundStation[];
 
-    const payload = createPassPredictionInput(fleet, catalog, [], stations, '2026-04-24T06:00:00.000Z');
+    const payload = createPassPredictionInput(
+      fleet,
+      catalog,
+      [],
+      stations,
+      '2026-04-24T06:00:00.000Z',
+      [],
+      { type: 'groundStation', id: 'seoul' },
+    );
 
     expect(payload).not.toBeNull();
     if (!payload) throw new Error('Expected pass prediction payload');
     expect(payload.satellites[0].satelliteRef.tags).toEqual(['crew']);
+    expect(payload.priorityTarget).toEqual({ type: 'groundStation', id: 'seoul' });
     expect(() => structuredClone(payload)).not.toThrow();
   });
 });

@@ -28,7 +28,7 @@ const mapFocusMode = ref(false);
 const focusedTarget = ref<MapFocusTarget | null>(null);
 const trackingScopeTab = ref<'groundStations' | 'trackedObjects'>('groundStations');
 let orbitClockTimer: number | null = null;
-usePassPredictions();
+usePassPredictions(focusedTarget);
 
 onMounted(() => {
   orbitClockTimer = window.setInterval(() => {

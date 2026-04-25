@@ -2210,16 +2210,16 @@ textarea:focus-visible {
 
 .orbit-map__satellite-label text {
   fill: var(--surface);
-  font-size: 12px;
+  font-size: 10.5px;
   font-weight: 700;
   paint-order: stroke;
   stroke: rgba(0, 0, 0, 0.86);
-  stroke-width: 2px;
+  stroke-width: 1.6px;
 }
 
 .orbit-map__satellite-label text + text {
   fill: var(--muted);
-  font-size: 10px;
+  font-size: 8.5px;
   font-weight: 500;
 }
 

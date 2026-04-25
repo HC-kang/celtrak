@@ -148,6 +148,31 @@ describe('OrbitMap2D', () => {
     expect(wrapper.emitted('focus-target')?.[0]).toEqual([{ type: 'satellite', id: 'catalog:25544' }]);
   });
 
+  it('keeps satellite labels compact while zooming the map', async () => {
+    const wrapper = mount(OrbitMap2D, {
+      props: {
+        satellites: [satelliteEntry],
+        groundStations: [station],
+        contactLinks: [],
+        orbitMode: 'live',
+        orbitTimeIso: '2026-04-25T00:00:00.000Z',
+      },
+    });
+    const svg = wrapper.find('svg').element as SVGSVGElement;
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1024, height: 1024, right: 1024, bottom: 1024, x: 0, y: 0, toJSON: () => ({}) });
+
+    await wrapper.find('svg').trigger('wheel', {
+      deltaY: -900,
+      clientX: 512,
+      clientY: 512,
+    });
+    await nextTick();
+
+    const transform = wrapper.find('.orbit-map__satellite-label').attributes('transform') ?? '';
+    const scale = Number(/scale\(([-\d.]+)\)/.exec(transform)?.[1] ?? 1);
+    expect(scale).toBeLessThan(1);
+  });
+
   it('centers focused ground stations and keeps horizontal panning unbounded', async () => {
     vi.useFakeTimers();
     const wrapper = mount(OrbitMap2D, {
