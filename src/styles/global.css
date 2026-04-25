@@ -2147,7 +2147,7 @@ textarea:focus-visible {
 }
 
 .orbit-map__night-mask {
-  fill: rgba(2, 6, 23, 0.68);
+  fill: rgba(2, 6, 23, 0.48);
   stroke: rgba(83, 177, 255, 0.08);
   stroke-width: 0.6;
   mix-blend-mode: normal;
