@@ -68,3 +68,5 @@
 - 2026-04-25: 2D night mask should indicate darkness without hiding OSM map detail; keep the overlay around rgba alpha 0.48 rather than the previous very dark 0.68.
 
 - 2026-04-25: Satellite colors are semantic now: focused white, risk red, active contact cyan, normal tracked blue. Do not reintroduce order-based rotating satellite palettes because users read colors as state.
+
+- 2026-04-25: CDM V1.5 direction is SOCRATES Plus ingest, not in-app all-vs-all. Worker parses CelesTrak raw CSV (`/SOCRATES/sort-minRange.csv`) with limit/catnr filtering; Briefing exposes 전체/Tracked/Focused CDM scopes.

@@ -32,6 +32,21 @@ interface CatalogEntry {
   };
 }
 
+interface ConjunctionRecord {
+  id: string;
+  origin: DataOrigin;
+  stale?: boolean;
+  tca: string;
+  primary: { name: string; catalogNumber?: number };
+  secondary: { name: string; catalogNumber?: number };
+  missDistanceKm: number;
+  relVelocityKmS: number;
+  pc?: number;
+  source: 'celestrak-socrates' | 'self-computed';
+  fetchedAt: string;
+  note?: string;
+}
+
 const CELESTRAK_GROUPS = [
   { key: 'stations', label: 'Stations' },
   { key: 'weather', label: 'Weather' },
@@ -42,12 +57,15 @@ const API_CACHE_VERSION = 'v4';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
 const MAX_CATALOG_NUMBER_LOOKUP = 100;
+const DEFAULT_CONJUNCTION_LIMIT = 500;
+const MAX_CONJUNCTION_LIMIT = 2_000;
 const DEFAULT_API_CACHE_TTL_SECONDS = 900;
 // CelesTrak GP/SATCAT does not provide usable expiry headers and asks clients not to refetch more than once per 2 hours.
 const DEFAULT_CATALOG_CACHE_TTL_SECONDS = 9_000;
 const CATALOG_ORIGIN_REFRESH_SECONDS = 7_200;
 const TLE_FETCH_TIMEOUT_MS = 20_000;
 const SATCAT_FETCH_TIMEOUT_MS = 20_000;
+const SOCRATES_FETCH_TIMEOUT_MS = 30_000;
 
 interface CelestrakSatcatRecord {
   OBJECT_NAME?: string;
@@ -132,7 +150,7 @@ async function buildApiResponse(url: URL) {
     return json(await getSpaceWeatherSummary());
   }
   if (url.pathname === '/api/celestrak/socrates') {
-    return json(createConjunctionFallback('SOCRATES API parser pending'));
+    return json(await getConjunctions(url));
   }
   if (url.pathname === '/api/celestrak/decay') {
     return json(createDecayFallback('Decay feed parser pending'));
@@ -251,6 +269,24 @@ function catalogNumbersFromUrl(url: URL) {
     .map((value) => Number(value.trim()))
     .filter((value) => Number.isInteger(value) && value > 0);
   return [...new Set(numbers)].sort((left, right) => left - right);
+}
+
+function conjunctionLimitFromUrl(url: URL) {
+  return clampNumber(
+    Number(url.searchParams.get('limit') ?? url.searchParams.get('LIMIT')),
+    1,
+    MAX_CONJUNCTION_LIMIT,
+    DEFAULT_CONJUNCTION_LIMIT,
+  );
+}
+
+function socratesOrderFromUrl(url: URL) {
+  const order = cleanString(url.searchParams.get('order') ?? url.searchParams.get('ORDER'))?.toUpperCase();
+  if (order === 'MAXPROB') return 'maxProb';
+  if (order === 'TCA') return 'tca';
+  if (order === 'RELSPEED') return 'relSpeed';
+  if (order === 'SSC') return 'ssc';
+  return 'minRange';
 }
 
 async function getCatalog(url: URL): Promise<CatalogEntry[]> {
@@ -414,6 +450,136 @@ function dedupeCatalog(entries: CatalogEntry[]) {
     }
   }
   return [...byCatalogNumber.values()];
+}
+
+async function getConjunctions(url: URL): Promise<ConjunctionRecord[]> {
+  const limit = conjunctionLimitFromUrl(url);
+  const catalogNumbers = new Set(catalogNumbersFromUrl(url));
+  const order = socratesOrderFromUrl(url);
+  try {
+    const response = await fetchWithTimeout(socratesCsvUrl(order), SOCRATES_FETCH_TIMEOUT_MS);
+    if (!response.ok) throw new Error(`SOCRATES ${order} ${response.status}`);
+    const lastModified = response.headers.get('last-modified');
+    const fetchedAt = lastModified ? new Date(lastModified).toISOString() : new Date().toISOString();
+    return parseSocratesCsv(await response.text(), {
+      catalogNumbers,
+      fetchedAt,
+      limit,
+    });
+  } catch (error) {
+    return createConjunctionFallback(error instanceof Error ? error.message : 'SOCRATES CSV unavailable');
+  }
+}
+
+function socratesCsvUrl(order: string) {
+  const file =
+    order === 'maxProb'
+      ? 'sort-maxProb.csv'
+      : order === 'tca'
+        ? 'sort-tca.csv'
+        : order === 'relSpeed'
+          ? 'sort-relSpeed.csv'
+          : order === 'ssc'
+            ? 'sort-ssc.csv'
+            : 'sort-minRange.csv';
+  return `https://celestrak.org/SOCRATES/${file}`;
+}
+
+function parseSocratesCsv(
+  text: string,
+  options: { catalogNumbers: Set<number>; fetchedAt: string; limit: number },
+): ConjunctionRecord[] {
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  const [headerLine, ...rows] = lines;
+  const headers = parseCsvLine(headerLine ?? '');
+  const indexes = Object.fromEntries(headers.map((header, index) => [header, index]));
+  const records: ConjunctionRecord[] = [];
+
+  for (const row of rows) {
+    const cells = parseCsvLine(row);
+    const catalogNumber1 = numberFromCsv(cells[indexes.NORAD_CAT_ID_1]);
+    const catalogNumber2 = numberFromCsv(cells[indexes.NORAD_CAT_ID_2]);
+    if (
+      options.catalogNumbers.size &&
+      (!catalogNumber1 || !options.catalogNumbers.has(catalogNumber1)) &&
+      (!catalogNumber2 || !options.catalogNumbers.has(catalogNumber2))
+    ) {
+      continue;
+    }
+
+    const tca = normalizeSocratesTimestamp(cells[indexes.TCA]);
+    const missDistanceKm = numberFromCsv(cells[indexes.TCA_RANGE]);
+    const relVelocityKmS = numberFromCsv(cells[indexes.TCA_RELATIVE_SPEED]);
+    if (!tca || missDistanceKm === undefined || relVelocityKmS === undefined) continue;
+
+    records.push({
+      id: `socrates-${catalogNumber1 ?? 'unknown'}-${catalogNumber2 ?? 'unknown'}-${tca.replace(/\W/g, '')}`,
+      origin: 'OSINT',
+      tca,
+      primary: {
+        name: cleanSocratesObjectName(cells[indexes.OBJECT_NAME_1]) ?? `NORAD ${catalogNumber1 ?? 'unknown'}`,
+        catalogNumber: catalogNumber1,
+      },
+      secondary: {
+        name: cleanSocratesObjectName(cells[indexes.OBJECT_NAME_2]) ?? `NORAD ${catalogNumber2 ?? 'unknown'}`,
+        catalogNumber: catalogNumber2,
+      },
+      missDistanceKm,
+      relVelocityKmS,
+      pc: numberFromCsv(cells[indexes.MAX_PROB]),
+      source: 'celestrak-socrates',
+      fetchedAt: options.fetchedAt,
+    });
+
+    if (records.length >= options.limit) break;
+  }
+
+  return records;
+}
+
+function parseCsvLine(line: string) {
+  const cells: string[] = [];
+  let cell = '';
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    const next = line[index + 1];
+    if (character === '"' && quoted && next === '"') {
+      cell += '"';
+      index += 1;
+      continue;
+    }
+    if (character === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (character === ',' && !quoted) {
+      cells.push(cell);
+      cell = '';
+      continue;
+    }
+    cell += character;
+  }
+  cells.push(cell);
+  return cells.map((value) => value.trim());
+}
+
+function normalizeSocratesTimestamp(value: string | undefined) {
+  const text = cleanString(value);
+  if (!text) return undefined;
+  const date = new Date(`${text.replace(' ', 'T')}Z`);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+function cleanSocratesObjectName(value: string | undefined) {
+  return cleanString(value)?.replace(/\s+\[[^\]]+\]$/, '');
+}
+
+function numberFromCsv(value: string | undefined) {
+  const text = cleanString(value);
+  if (!text) return undefined;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : undefined;
 }
 
 function normalizeObjectType(value: unknown): CatalogEntry['satcat']['objectType'] {

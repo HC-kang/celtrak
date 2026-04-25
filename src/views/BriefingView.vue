@@ -27,6 +27,10 @@ const mapControlsOpen = ref(false);
 const mapFocusMode = ref(false);
 const focusedTarget = ref<MapFocusTarget | null>(null);
 const trackingScopeTab = ref<'groundStations' | 'trackedObjects'>('groundStations');
+const cdmScope = ref<'tracked' | 'focused' | 'all'>('tracked');
+const cdmScopeRecords = ref<ConjunctionRecord[] | null>(null);
+const cdmLoading = ref(false);
+const cdmError = ref('');
 let orbitClockTimer: number | null = null;
 usePassPredictions(focusedTarget);
 
@@ -119,11 +123,16 @@ const satelliteLookup = computed(() =>
 
 const focusedSatellite = computed(() => {
   if (focusedTarget.value?.type !== 'satellite') return null;
-  const catalogNumber = catalogNumberFromSatelliteId(focusedTarget.value.id);
+  const catalogNumber = focusedCatalogNumber.value;
   if (!catalogNumber) return null;
   const entry = visibleFleetEntries.value.find((item) => item?.satcat.catalogNumber === catalogNumber);
   const member = (store.selectedFleet?.memberRefs ?? []).find((item) => item.refType === 'catalog' && item.catalogNumber === catalogNumber);
   return entry && member ? { entry, member } : null;
+});
+
+const focusedCatalogNumber = computed(() => {
+  if (focusedTarget.value?.type !== 'satellite') return null;
+  return catalogNumberFromSatelliteId(focusedTarget.value.id);
 });
 
 const focusedStation = computed(() => {
@@ -133,9 +142,20 @@ const focusedStation = computed(() => {
 
 const enabledGroundStationCount = computed(() => store.groundStations.filter((station) => station.enabled).length);
 const visibleTrackedObjectCount = computed(() => trackedObjects.value.filter((item) => !item.hidden).length);
+const cdmQueryCatalogNumbers = computed(() => {
+  if (cdmScope.value === 'all') return [];
+  if (cdmScope.value === 'focused') return focusedCatalogNumber.value ? [focusedCatalogNumber.value] : [];
+  return store.selectedFleetCatalogNumbers;
+});
+const cdmScopeConjunctions = computed(() => {
+  const records = cdmScopeRecords.value ?? store.conjunctions;
+  if (cdmScope.value === 'all') return records;
+  const catalogNumbers = cdmQueryCatalogNumbers.value;
+  return catalogNumbers.length ? filterConjunctionsByCatalog(records, catalogNumbers) : [];
+});
 const riskSatelliteIds = computed(() => {
   const ids = new Set<string>();
-  for (const item of store.filteredConjunctions) {
+  for (const item of cdmScopeConjunctions.value) {
     if (cdmSeverity(item) === 'info') continue;
     addCatalogRiskId(ids, item.primary.catalogNumber);
     addCatalogRiskId(ids, item.secondary.catalogNumber);
@@ -162,11 +182,10 @@ const focusedLinks = computed(() => {
 
 const focusedConjunctions = computed(() => {
   const target = focusedTarget.value;
-  if (target?.type !== 'satellite') return store.filteredConjunctions.slice(0, 3);
-  const catalogNumber = catalogNumberFromSatelliteId(target.id);
+  if (target?.type !== 'satellite') return cdmScopeConjunctions.value.slice(0, 3);
+  const catalogNumber = focusedCatalogNumber.value;
   if (!catalogNumber) return [];
-  return store.filteredConjunctions
-    .filter((item) => item.primary.catalogNumber === catalogNumber || item.secondary.catalogNumber === catalogNumber)
+  return filterConjunctionsByCatalog(cdmScopeConjunctions.value, [catalogNumber])
     .sort((left, right) => conjunctionSeverityRank(cdmSeverity(left)) - conjunctionSeverityRank(cdmSeverity(right)) || left.tca.localeCompare(right.tca))
     .slice(0, 4);
 });
@@ -202,7 +221,7 @@ const displayedOrbitTimeIso = computed(() => displayedOrbitTime.value.toISOStrin
 
 const warRoomStats = computed(() => [
   { label: 'Visible Tracks', value: `${visibleFleetEntries.value.length}/${trackedObjects.value.length}`, tone: 'good' },
-  { label: 'Conjunctions', value: `${store.filteredConjunctions.length}`, tone: store.filteredConjunctions.length ? 'warn' : 'good' },
+  { label: 'Conjunctions', value: `${cdmScopeConjunctions.value.length}`, tone: cdmScopeConjunctions.value.length ? 'warn' : 'good' },
   { label: 'Kp Index', value: `${store.weather?.kp.current ?? '—'}`, tone: (store.weather?.kp.current ?? 0) >= 4 ? 'warn' : 'good' },
   { label: 'Open Anomalies', value: `${store.anomalies.length}`, tone: store.anomalies.length ? 'critical' : 'good' },
 ]);
@@ -218,7 +237,7 @@ const activeLayers = computed(() => [
   { label: 'Satellite States', detail: `${riskSatelliteIds.value.length} risk · ${contactLinks.value.filter((link) => link.status === 'IN_CONTACT').length} contact`, active: visibleFleetEntries.value.length > 0 },
   { label: 'Ground Stations', detail: `${store.groundStations.filter((station) => station.enabled).length} online`, active: true },
   { label: 'Contact Links', detail: `${contactLinks.value.filter((link) => link.status === 'IN_CONTACT').length} active`, active: contactLinks.value.some((link) => link.status === 'IN_CONTACT') },
-  { label: 'Conjunction Risk', detail: `${store.filteredConjunctions.length} windows`, active: store.filteredConjunctions.length > 0 },
+  { label: 'Conjunction Risk', detail: `${cdmScopeConjunctions.value.length} ${cdmScope.value} windows`, active: cdmScopeConjunctions.value.length > 0 },
   { label: 'Space Weather', detail: store.weather?.kp.storm ?? (store.loading ? '불러오는 중' : '데이터 없음'), active: Boolean(store.weather) },
   { label: 'Decay Watch', detail: `${store.filteredDecayPredictions.length} entries`, active: store.filteredDecayPredictions.length > 0 },
 ]);
@@ -233,7 +252,7 @@ const intelQueue = computed(() =>
       time: 'Live',
       tone: alert.tone,
     })),
-    ...store.filteredConjunctions.slice(0, 2).map((item) => ({
+    ...cdmScopeConjunctions.value.slice(0, 2).map((item) => ({
       id: `conjunction-${item.id}`,
       kicker: 'Conjunction',
       title: `${item.primary.name} × ${item.secondary.name}`,
@@ -348,6 +367,15 @@ function cdmSeverity(item: ConjunctionRecord) {
   return classifyConjunctionSeverity(item);
 }
 
+function filterConjunctionsByCatalog(records: ConjunctionRecord[], catalogNumbers: number[]) {
+  const catalogNumberSet = new Set(catalogNumbers);
+  return records.filter(
+    (item) =>
+      (item.primary.catalogNumber !== undefined && catalogNumberSet.has(item.primary.catalogNumber)) ||
+      (item.secondary.catalogNumber !== undefined && catalogNumberSet.has(item.secondary.catalogNumber)),
+  );
+}
+
 function addCatalogRiskId(ids: Set<string>, catalogNumber: number | undefined) {
   if (catalogNumber) {
     ids.add(`catalog:${catalogNumber}`);
@@ -399,6 +427,36 @@ function setAllGroundStations(enabled: boolean) {
 function refKey(member: FleetMemberRef) {
   return member.refType === 'catalog' ? `catalog:${member.catalogNumber}` : `custom:${member.customTleId}`;
 }
+
+async function refreshCdmScope() {
+  const catalogNumbers = cdmQueryCatalogNumbers.value;
+  if (cdmScope.value !== 'all' && !catalogNumbers.length) {
+    cdmScopeRecords.value = [];
+    return;
+  }
+  cdmLoading.value = true;
+  cdmError.value = '';
+  try {
+    cdmScopeRecords.value = await store.fetchConjunctions({
+      catalogNumbers,
+      limit: cdmScope.value === 'all' ? 500 : 1000,
+      order: 'MINRANGE',
+    });
+  } catch (error) {
+    cdmError.value = error instanceof Error ? error.message : 'SOCRATES 데이터를 불러오지 못했습니다.';
+    cdmScopeRecords.value = null;
+  } finally {
+    cdmLoading.value = false;
+  }
+}
+
+watch(
+  () => [cdmScope.value, cdmQueryCatalogNumbers.value.join(',')] as const,
+  () => {
+    void refreshCdmScope();
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -793,17 +851,39 @@ function refKey(member: FleetMemberRef) {
       <p class="supporting-text">{{ truncate(store.weather?.notices?.[0]?.text ?? '현재 특기사항이 없습니다.', 96) }}</p>
     </PanelCard>
 
-    <PanelCard title="Next Conjunctions" subtitle="SOCRATES screening">
+    <PanelCard title="Next Conjunctions" subtitle="SOCRATES Plus screening">
       <template #actions>
-        <OriginBadge v-if="store.filteredConjunctions[0]?.fetchedAt" origin="OSINT" :timestamp="store.filteredConjunctions[0].fetchedAt" :stale="store.offline" />
+        <OriginBadge v-if="cdmScopeConjunctions[0]?.fetchedAt" origin="OSINT" :timestamp="cdmScopeConjunctions[0].fetchedAt" :stale="store.offline" />
       </template>
+      <div class="tracking-scope__tabs cdm-scope__tabs" role="tablist" aria-label="CDM scope">
+        <button class="tracking-scope__tab" :class="{ 'tracking-scope__tab--active': cdmScope === 'all' }" type="button" @click="cdmScope = 'all'">전체</button>
+        <button class="tracking-scope__tab" :class="{ 'tracking-scope__tab--active': cdmScope === 'tracked' }" type="button" @click="cdmScope = 'tracked'">Tracked</button>
+        <button
+          class="tracking-scope__tab"
+          :class="{ 'tracking-scope__tab--active': cdmScope === 'focused' }"
+          type="button"
+          :disabled="!focusedCatalogNumber"
+          @click="cdmScope = 'focused'"
+        >
+          Focused
+        </button>
+      </div>
+      <p v-if="cdmLoading" class="supporting-text">SOCRATES Plus 결과를 불러오는 중입니다.</p>
+      <p v-else-if="cdmError" class="supporting-text">{{ cdmError }}</p>
       <div class="stack-list">
-        <article v-for="item in store.filteredConjunctions.slice(0, 3)" :key="item.id" class="stack-list__item" :class="`stack-list__item--${cdmSeverity(item)}`">
+        <article v-for="item in cdmScopeConjunctions.slice(0, 3)" :key="item.id" class="stack-list__item" :class="`stack-list__item--${cdmSeverity(item)}`">
           <div>
             <strong>{{ cdmSeverityLabel(item) }} · {{ item.primary.name }} × {{ item.secondary.name }}</strong>
             <p>{{ item.missDistanceKm.toFixed(1) }} km miss · {{ item.relVelocityKmS.toFixed(1) }} km/s</p>
           </div>
           <small>{{ formatRelative(item.tca) }}</small>
+        </article>
+        <article v-if="!cdmLoading && !cdmScopeConjunctions.length" class="stack-list__item">
+          <div>
+            <strong>CDM 결과 없음</strong>
+            <p>{{ cdmScope === 'focused' ? '포커스한 위성의 SOCRATES 결과가 없습니다.' : '현재 scope에 표시할 conjunction이 없습니다.' }}</p>
+          </div>
+          <small>{{ cdmScope }}</small>
         </article>
       </div>
     </PanelCard>

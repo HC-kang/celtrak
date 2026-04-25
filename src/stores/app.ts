@@ -16,7 +16,7 @@ import type {
   UserFleet,
   UserPreferences,
 } from '@/domain/types';
-import { createGateway } from '@/services/gateway';
+import { createGateway, type ConjunctionQuery } from '@/services/gateway';
 import { createFleetStore } from '@/services/store/createFleetStore';
 import { loadPreferences, savePreferences } from '@/lib/prefs';
 import { nowIso } from '@/lib/time';
@@ -213,6 +213,10 @@ export const useAppStore = defineStore('app', () => {
     } finally {
       catalogIndexLoading.value = false;
     }
+  }
+
+  async function fetchConjunctions(query?: ConjunctionQuery) {
+    return gateway.getConjunctions(query);
   }
 
   function mergeCatalogEntries(entries: CatalogEntry[]) {
@@ -507,6 +511,7 @@ export const useAppStore = defineStore('app', () => {
     deleteFleet,
     events,
     exportWorkspace,
+    fetchConjunctions,
     filteredConjunctions,
     filteredDecayPredictions,
     fleetHealth,

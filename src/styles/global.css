@@ -985,10 +985,20 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
+.tracking-scope__tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .tracking-scope__tab--active {
   color: var(--surface);
   background: var(--accent);
   box-shadow: 0 8px 20px rgba(0, 112, 204, 0.28);
+}
+
+.cdm-scope__tabs {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 12px;
 }
 
 .tracking-scope__panel,

@@ -14,10 +14,16 @@ export interface CatalogQuery {
   catalogNumbers?: number[];
 }
 
+export interface ConjunctionQuery {
+  catalogNumbers?: number[];
+  limit?: number;
+  order?: 'MINRANGE' | 'MAXPROB' | 'TCA' | 'RELSPEED' | 'SSC';
+}
+
 export interface OrbitLabGateway {
   getCatalog(query?: CatalogQuery): Promise<CatalogEntry[]>;
   getWeather(): Promise<SpaceWeatherSnapshot>;
-  getConjunctions(): Promise<ConjunctionRecord[]>;
+  getConjunctions(query?: ConjunctionQuery): Promise<ConjunctionRecord[]>;
   getDecayPredictions(): Promise<DecayPrediction[]>;
   getGroundStations(): Promise<GroundStation[]>;
   getAlerts(): Promise<DashboardAlert[]>;
@@ -48,8 +54,8 @@ export function createGateway(): OrbitLabGateway {
     async getWeather() {
       return (await safeFetchJson<SpaceWeatherSnapshot>('/api/swpc/summary')) ?? mockWeather;
     },
-    async getConjunctions() {
-      return (await safeFetchJson<ConjunctionRecord[]>('/api/celestrak/socrates')) ?? mockConjunctions;
+    async getConjunctions(query) {
+      return (await safeFetchJson<ConjunctionRecord[]>(createConjunctionEndpoint(query))) ?? mockConjunctions;
     },
     async getDecayPredictions() {
       return (await safeFetchJson<DecayPrediction[]>('/api/celestrak/decay')) ?? mockDecay;
@@ -61,6 +67,17 @@ export function createGateway(): OrbitLabGateway {
       return mockAlerts;
     },
   };
+}
+
+function createConjunctionEndpoint(query?: ConjunctionQuery) {
+  const params = new URLSearchParams();
+  params.set('order', query?.order ?? 'MINRANGE');
+  params.set('limit', String(query?.limit ?? 500));
+  const catalogNumbers = uniqueCatalogNumbers(query?.catalogNumbers ?? []);
+  if (catalogNumbers.length) {
+    params.set('catnr', catalogNumbers.join(','));
+  }
+  return `/api/celestrak/socrates?${params.toString()}`;
 }
 
 function createCatalogEndpoint(query?: CatalogQuery) {
