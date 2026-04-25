@@ -9,6 +9,7 @@ const props = defineProps<{
   contactLinks?: LiveContactLink[];
   dataSaver?: boolean;
   focusedTarget?: MapFocusTarget | null;
+  hoveredTarget?: MapFocusTarget | null;
   groundStations?: GroundStation[];
   livePlaybackRate?: number;
   orbitMode: 'live' | 'simulation';
@@ -35,6 +36,7 @@ const SATELLITE_LABEL_HEIGHT = 32;
 const SATELLITE_LABEL_RADIUS = 8;
 const SATELLITE_STATE_COLORS = {
   focused: '#ffffff',
+  preview: '#d7f1ff',
   risk: '#ff4d2d',
   contact: '#1eaedb',
   tracked: '#53b1ff',
@@ -182,6 +184,9 @@ const activeContactSegments = computed(() =>
         satellite: satellitePoint,
         station: stationPoint,
         focused: targetMatches(props.focusedTarget, { type: 'satellite', id: link.satelliteId }) || targetMatches(props.focusedTarget, { type: 'groundStation', id: link.groundStationId }),
+        previewed:
+          targetMatches(props.hoveredTarget, { type: 'satellite', id: link.satelliteId }) ||
+          targetMatches(props.hoveredTarget, { type: 'groundStation', id: link.groundStationId }),
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item)),
@@ -651,6 +656,7 @@ function targetMatches(left: MapFocusTarget | null | undefined, right: MapFocusT
 
 function satelliteVisualTone(id: string): SatelliteVisualTone {
   if (targetMatches(props.focusedTarget, { type: 'satellite', id })) return 'focused';
+  if (targetMatches(props.hoveredTarget, { type: 'satellite', id })) return 'preview';
   if (riskSatelliteIdSet.value.has(id)) return 'risk';
   if (activeContactSatelliteIdSet.value.has(id)) return 'contact';
   return 'tracked';
@@ -770,10 +776,13 @@ function drawCanvasContacts(context: CanvasRenderingContext2D, metrics: CanvasMe
       context.moveTo(start.x, start.y);
       context.lineTo(end.x, end.y);
       context.strokeStyle = segment.focused ? '#ffffff' : 'rgba(30, 174, 219, 0.76)';
-      context.lineWidth = segment.focused ? 3.2 : 2;
-      context.setLineDash(segment.focused ? [] : [8, 8]);
-      context.shadowColor = 'rgba(30, 174, 219, 0.44)';
-      context.shadowBlur = 8;
+      if (segment.previewed && !segment.focused) {
+        context.strokeStyle = 'rgba(215, 241, 255, 0.9)';
+      }
+      context.lineWidth = segment.focused ? 3.2 : segment.previewed ? 3 : 2;
+      context.setLineDash(segment.focused ? [] : segment.previewed ? [2, 6] : [8, 8]);
+      context.shadowColor = segment.previewed && !segment.focused ? 'rgba(215, 241, 255, 0.5)' : 'rgba(30, 174, 219, 0.44)';
+      context.shadowBlur = segment.focused || segment.previewed ? 10 : 8;
       context.stroke();
 
       const labelPoint = contactLabelPoint(segment, world.offset);
@@ -798,16 +807,19 @@ function drawCanvasStations(context: CanvasRenderingContext2D, metrics: CanvasMe
       if (!pointInExpandedView(point, metrics, 36)) continue;
       const screen = mapToCanvasPoint(point, metrics);
       const focused = targetMatches(props.focusedTarget, { type: 'groundStation', id: station.id });
+      const previewed = !focused && targetMatches(props.hoveredTarget, { type: 'groundStation', id: station.id });
       context.beginPath();
       context.arc(screen.x, screen.y, 24, 0, Math.PI * 2);
-      context.strokeStyle = focused ? 'rgba(255, 255, 255, 0.7)' : 'rgba(30, 174, 219, 0.34)';
-      context.lineWidth = focused ? 2.2 : 1.4;
+      context.strokeStyle = focused ? 'rgba(255, 255, 255, 0.7)' : previewed ? 'rgba(215, 241, 255, 0.7)' : 'rgba(30, 174, 219, 0.34)';
+      context.lineWidth = focused ? 2.2 : previewed ? 2.1 : 1.4;
+      context.setLineDash(previewed ? [2, 5] : []);
       context.stroke();
+      context.setLineDash([]);
       context.beginPath();
-      context.arc(screen.x, screen.y, focused ? 8 : 6, 0, Math.PI * 2);
-      context.fillStyle = focused ? '#ffffff' : '#1eaedb';
-      context.shadowColor = 'rgba(30, 174, 219, 0.7)';
-      context.shadowBlur = 9;
+      context.arc(screen.x, screen.y, focused ? 8 : previewed ? 7.4 : 6, 0, Math.PI * 2);
+      context.fillStyle = focused ? '#ffffff' : previewed ? '#d7f1ff' : '#1eaedb';
+      context.shadowColor = previewed ? 'rgba(215, 241, 255, 0.7)' : 'rgba(30, 174, 219, 0.7)';
+      context.shadowBlur = focused || previewed ? 12 : 9;
       context.fill();
       context.shadowBlur = 0;
       context.textAlign = station.labelAnchor === 'start' ? 'left' : 'right';
@@ -831,24 +843,27 @@ function drawCanvasSatellites(context: CanvasRenderingContext2D, metrics: Canvas
       const point = { ...item.point, x: item.point.x + world.offset };
       if (!pointInExpandedView(point, metrics, 42)) return;
       const focused = targetMatches(props.focusedTarget, { type: 'satellite', id: item.id });
+      const previewed = !focused && targetMatches(props.hoveredTarget, { type: 'satellite', id: item.id });
       const screen = mapToCanvasPoint(point, metrics);
       context.beginPath();
-      context.arc(screen.x, screen.y, focused ? 21 : 16, 0, Math.PI * 2);
+      context.arc(screen.x, screen.y, focused ? 21 : previewed ? 20 : 16, 0, Math.PI * 2);
       context.strokeStyle = item.color;
-      context.lineWidth = focused ? 3.2 : 1.7;
-      context.globalAlpha = focused ? 0.72 : 0.38;
+      context.lineWidth = focused ? 3.2 : previewed ? 3 : 1.7;
+      context.globalAlpha = focused ? 0.72 : previewed ? 0.68 : 0.38;
+      context.setLineDash(previewed ? [2, 5] : []);
       context.stroke();
+      context.setLineDash([]);
       context.globalAlpha = 1;
       context.beginPath();
-      context.arc(screen.x, screen.y, focused ? 7.8 : 5.8, 0, Math.PI * 2);
+      context.arc(screen.x, screen.y, focused ? 7.8 : previewed ? 7.2 : 5.8, 0, Math.PI * 2);
       context.fillStyle = item.color;
       context.shadowColor = item.color;
-      context.shadowBlur = focused ? 13 : 8;
+      context.shadowBlur = focused || previewed ? 13 : 8;
       context.fill();
       context.shadowBlur = 0;
 
-      if (focused || shouldLabelAll || index < 12) {
-        drawCanvasSatelliteLabel(context, item, world.offset, metrics, focused);
+      if (focused || previewed || shouldLabelAll || index < 12) {
+        drawCanvasSatelliteLabel(context, item, world.offset, metrics, focused, previewed);
       }
     });
   }
@@ -861,6 +876,7 @@ function drawCanvasSatelliteLabel(
   worldOffset: number,
   metrics: CanvasMetrics,
   focused: boolean,
+  previewed = false,
 ) {
   const bounds = {
     ...item.labelBounds,
@@ -871,9 +887,9 @@ function drawCanvasSatelliteLabel(
   const width = (bounds.width / metrics.view.width) * metrics.width;
   const height = (bounds.height / metrics.view.height) * metrics.height;
   context.save();
-  context.fillStyle = focused ? 'rgba(0, 0, 0, 0.84)' : 'rgba(0, 0, 0, 0.68)';
-  context.strokeStyle = focused ? '#ffffff' : 'rgba(255, 255, 255, 0.18)';
-  context.lineWidth = focused ? 2 : 1;
+  context.fillStyle = focused ? 'rgba(0, 0, 0, 0.84)' : previewed ? 'rgba(0, 18, 32, 0.82)' : 'rgba(0, 0, 0, 0.68)';
+  context.strokeStyle = focused ? '#ffffff' : previewed ? '#d7f1ff' : 'rgba(255, 255, 255, 0.18)';
+  context.lineWidth = focused || previewed ? 2 : 1;
   drawRoundedRect(context, topLeft.x, topLeft.y, width, height, Math.min(12, height / 2));
   context.fill();
   context.stroke();
@@ -1112,6 +1128,7 @@ watch(
     currentView.value,
     visibleWorlds.value,
     props.focusedTarget,
+    props.hoveredTarget,
     usesCanvasDynamicLayer.value,
   ],
   () => queueDynamicCanvasDraw(),
@@ -1238,7 +1255,7 @@ watch(
             v-for="segment in activeContactSegments"
             :key="`${world.id}-${segment.id}`"
             class="orbit-map__contact-link"
-            :class="{ 'orbit-map__contact-link--focused': segment.focused }"
+            :class="{ 'orbit-map__contact-link--focused': segment.focused, 'orbit-map__contact-link--preview': segment.previewed && !segment.focused }"
           >
             <path :d="contactPath(segment, world.offset)" />
             <text
@@ -1261,7 +1278,10 @@ watch(
             v-for="station in stationPoints"
             :key="`${world.id}-${station.id}`"
             class="orbit-map__station"
-            :class="{ 'orbit-map__station--focused': targetMatches(props.focusedTarget, { type: 'groundStation', id: station.id }) }"
+            :class="{
+              'orbit-map__station--focused': targetMatches(props.focusedTarget, { type: 'groundStation', id: station.id }),
+              'orbit-map__station--preview': !targetMatches(props.focusedTarget, { type: 'groundStation', id: station.id }) && targetMatches(props.hoveredTarget, { type: 'groundStation', id: station.id }),
+            }"
             role="button"
             tabindex="0"
             @click.stop="focusGroundStation(station)"
@@ -1292,6 +1312,7 @@ watch(
           class="orbit-map__track"
           :class="{
             'orbit-map__track--focused': item.tone === 'focused',
+            'orbit-map__track--preview': item.tone === 'preview',
             'orbit-map__track--risk': item.tone === 'risk',
             'orbit-map__track--contact': item.tone === 'contact',
           }"

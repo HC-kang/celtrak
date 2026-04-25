@@ -76,3 +76,5 @@
 - 2026-04-26: Ground-station elevation masks now carry provenance metadata (`verified`/`inferred`/`default`/`user`). Keep numeric masks user-overridable, show source confidence in Briefing/Ground Stations/More, and backfill local default source metadata even when the deployed Worker `/api/ground-stations` response has not yet been updated.
 
 - 2026-04-26: User clarified satellite name rect omission is acceptable in dense 2D canvas mode, but 3D rendered satellites should all expose labels. More was merged into Ground Stations to keep mobile bottom tabs to one row; `/more` now redirects to `/stations`.
+
+- 2026-04-26: Focus Inspector entity names should act as lightweight focus chips. Hover/focus on chips previews the target on 2D/3D maps with a cyan preview state, while the committed focus remains white so preview and focus are visually distinct.

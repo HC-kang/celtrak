@@ -10,6 +10,7 @@ const props = defineProps<{
   satellites: CatalogEntry[];
   contactLinks?: LiveContactLink[];
   focusedTarget?: MapFocusTarget | null;
+  hoveredTarget?: MapFocusTarget | null;
   groundStations?: GroundStation[];
   dataSaver?: boolean;
   orbitTimeIso: string;
@@ -27,6 +28,7 @@ const autoRotate = ref(true);
 
 const SATELLITE_STATE_COLORS = {
   focused: '#ffffff',
+  preview: '#d7f1ff',
   risk: '#ff4d2d',
   contact: '#1eaedb',
   tracked: '#53b1ff',
@@ -282,6 +284,7 @@ function updateSatellites() {
     const focusTarget = { type: 'satellite', id: `catalog:${entry.satcat.catalogNumber}` } satisfies MapFocusTarget;
     const tone = satelliteVisualTone(focusTarget.id);
     const focused = tone === 'focused';
+    const previewed = tone === 'preview';
     const color = new THREE.Color(SATELLITE_STATE_COLORS[tone]);
 
     const trailPoints = props.dataSaver ? [] : buildTrailPoints(satrec, baseTime);
@@ -304,7 +307,7 @@ function updateSatellites() {
       new THREE.MeshStandardMaterial({
         color,
         emissive: color,
-        emissiveIntensity: focused ? 2.6 : tone === 'risk' ? 1.9 : tone === 'contact' ? 1.55 : 1.15,
+        emissiveIntensity: focused ? 2.6 : previewed ? 2.25 : tone === 'risk' ? 1.9 : tone === 'contact' ? 1.55 : 1.15,
         roughness: 0.28,
       }),
     );
@@ -313,11 +316,11 @@ function updateSatellites() {
     group.add(marker);
 
     const halo = new THREE.Mesh(
-      new THREE.SphereGeometry(focused ? 0.18 : tone === 'risk' ? 0.15 : 0.12, 22, 22),
+      new THREE.SphereGeometry(focused ? 0.18 : previewed ? 0.17 : tone === 'risk' ? 0.15 : 0.12, 22, 22),
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: focused ? 0.34 : tone === 'risk' ? 0.28 : 0.18,
+        opacity: focused ? 0.34 : previewed ? 0.3 : tone === 'risk' ? 0.28 : 0.18,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       }),
@@ -360,8 +363,9 @@ function updateGroundStations() {
     const group = new THREE.Group();
     const focusTarget = { type: 'groundStation', id: station.id } satisfies MapFocusTarget;
     const focused = targetMatches(props.focusedTarget, focusTarget);
+    const previewed = !focused && targetMatches(props.hoveredTarget, focusTarget);
     const hasActiveContact = activeStationIds.has(station.id);
-    const color = new THREE.Color(focused ? '#ffffff' : hasActiveContact ? '#1eaedb' : '#53b1ff');
+    const color = new THREE.Color(focused ? '#ffffff' : previewed ? '#d7f1ff' : hasActiveContact ? '#1eaedb' : '#53b1ff');
     const surface = latLonToVector(station.latDeg, station.lonDeg, EARTH_RADIUS + 0.035);
     const normal = surface.clone().normalize();
 
@@ -370,7 +374,7 @@ function updateGroundStations() {
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: focused ? 1 : hasActiveContact ? 0.95 : 0.72,
+        opacity: focused ? 1 : previewed ? 0.98 : hasActiveContact ? 0.95 : 0.72,
       }),
     );
     marker.position.copy(surface);
@@ -382,7 +386,7 @@ function updateGroundStations() {
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: focused ? 0.62 : hasActiveContact ? 0.48 : 0.26,
+        opacity: focused ? 0.62 : previewed ? 0.56 : hasActiveContact ? 0.48 : 0.26,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       }),
@@ -397,7 +401,7 @@ function updateGroundStations() {
       new THREE.LineBasicMaterial({
         color,
         transparent: true,
-        opacity: hasActiveContact || focused ? 0.44 : 0.2,
+        opacity: hasActiveContact || focused || previewed ? 0.44 : 0.2,
         depthWrite: false,
       }),
     );
@@ -450,13 +454,17 @@ function updateContactLinks() {
     const focused =
       targetMatches(props.focusedTarget, { type: 'satellite', id: link.satelliteId }) ||
       targetMatches(props.focusedTarget, { type: 'groundStation', id: link.groundStationId });
-    const color = new THREE.Color(focused ? '#ffffff' : '#1eaedb');
+    const previewed =
+      !focused &&
+      (targetMatches(props.hoveredTarget, { type: 'satellite', id: link.satelliteId }) ||
+        targetMatches(props.hoveredTarget, { type: 'groundStation', id: link.groundStationId }));
+    const color = new THREE.Color(focused ? '#ffffff' : previewed ? '#d7f1ff' : '#1eaedb');
     const line = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints([stationPoint, orbitPoint.position]),
       new THREE.LineBasicMaterial({
         color,
         transparent: true,
-        opacity: focused ? 0.86 : 0.42,
+        opacity: focused ? 0.86 : previewed ? 0.74 : 0.42,
         depthWrite: false,
       }),
     );
@@ -466,6 +474,7 @@ function updateContactLinks() {
 
 function satelliteVisualTone(id: string): SatelliteVisualTone {
   if (targetMatches(props.focusedTarget, { type: 'satellite', id })) return 'focused';
+  if (targetMatches(props.hoveredTarget, { type: 'satellite', id })) return 'preview';
   if (riskSatelliteIdSet.value.has(id)) return 'risk';
   if (activeContactSatelliteIdSet.value.has(id)) return 'contact';
   return 'tracked';
@@ -1462,6 +1471,16 @@ watch(
     updateGroundStations();
     updateContactLinks();
     focusGlobeOnTarget(target);
+  },
+  { deep: true },
+);
+
+watch(
+  () => props.hoveredTarget,
+  () => {
+    updateSatellites();
+    updateGroundStations();
+    updateContactLinks();
   },
   { deep: true },
 );
