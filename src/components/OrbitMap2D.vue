@@ -13,6 +13,7 @@ const props = defineProps<{
   livePlaybackRate?: number;
   orbitMode: 'live' | 'simulation';
   orbitTimeIso: string;
+  riskSatelliteIds?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -32,7 +33,13 @@ const CANVAS_DYNAMIC_LAYER_THRESHOLD = 20;
 const SATELLITE_LABEL_WIDTH = 126;
 const SATELLITE_LABEL_HEIGHT = 32;
 const SATELLITE_LABEL_RADIUS = 8;
-const TRACK_COLORS = ['#0070cc', '#1eaedb', '#53b1ff', '#ffffff', '#d53b00', '#1883fd'];
+const SATELLITE_STATE_COLORS = {
+  focused: '#ffffff',
+  risk: '#ff4d2d',
+  contact: '#1eaedb',
+  tracked: '#53b1ff',
+} as const;
+type SatelliteVisualTone = keyof typeof SATELLITE_STATE_COLORS;
 type SatRec = ReturnType<typeof satellite.twoline2satrec>;
 
 const mapShell = ref<HTMLDivElement | null>(null);
@@ -124,6 +131,10 @@ const mapViewBox = computed(() => {
 const zoomPercent = computed(() => `${zoom.value.toFixed(1)}x`);
 const labelMapScale = computed(() => clamp(currentView.value.width / viewportSize.value.width, 0.18, 1));
 const usesCanvasDynamicLayer = computed(() => plotted.value.length > CANVAS_DYNAMIC_LAYER_THRESHOLD);
+const riskSatelliteIdSet = computed(() => new Set(props.riskSatelliteIds ?? []));
+const activeContactSatelliteIdSet = computed(
+  () => new Set((props.contactLinks ?? []).filter((link) => link.status === 'IN_CONTACT').map((link) => link.satelliteId)),
+);
 const trailStepMinutes = computed(() => {
   if (props.dataSaver) return 10;
   if (props.satellites.length > 80) return 12;
@@ -133,7 +144,7 @@ const trailStepMinutes = computed(() => {
 
 const plotted = computed(() =>
   props.satellites
-    .map((entry, index) => {
+    .map((entry) => {
       if (!entry.tle) return null;
       const satrec = satellite.twoline2satrec(entry.tle.line1, entry.tle.line2);
       const point = projectSatrec(satrec, displayedTime.value);
@@ -141,14 +152,17 @@ const plotted = computed(() =>
       const mapPoint = toMapPoint(point.lon, point.lat);
       const trail = props.dataSaver ? [] : buildTrail(satrec, displayedTime.value);
       const labelBounds = satelliteLabelBounds(mapPoint, labelMapScale.value);
+      const id = `catalog:${entry.satcat.catalogNumber}`;
+      const tone = satelliteVisualTone(id);
       return {
-        id: `catalog:${entry.satcat.catalogNumber}`,
+        id,
         entry,
-        color: TRACK_COLORS[index % TRACK_COLORS.length],
+        color: SATELLITE_STATE_COLORS[tone],
         label: entry.satcat.objectName.replace(/\s*\(.+?\)\s*/g, '').slice(0, 18),
         point: mapPoint,
         labelBounds,
         geo: point,
+        tone,
         trailSegments: splitTrail(trail),
       };
     })
@@ -633,6 +647,13 @@ function boundsContains(bounds: MapBounds, point: MapPoint) {
 
 function targetMatches(left: MapFocusTarget | null | undefined, right: MapFocusTarget) {
   return Boolean(left && left.type === right.type && left.id === right.id);
+}
+
+function satelliteVisualTone(id: string): SatelliteVisualTone {
+  if (targetMatches(props.focusedTarget, { type: 'satellite', id })) return 'focused';
+  if (riskSatelliteIdSet.value.has(id)) return 'risk';
+  if (activeContactSatelliteIdSet.value.has(id)) return 'contact';
+  return 'tracked';
 }
 
 function linkLabel(link: LiveContactLink) {
@@ -1269,7 +1290,11 @@ watch(
           v-for="item in plotted"
           :key="`${world.id}-${item.entry.satcat.catalogNumber}`"
           class="orbit-map__track"
-          :class="{ 'orbit-map__track--focused': targetMatches(props.focusedTarget, { type: 'satellite', id: item.id }) }"
+          :class="{
+            'orbit-map__track--focused': item.tone === 'focused',
+            'orbit-map__track--risk': item.tone === 'risk',
+            'orbit-map__track--contact': item.tone === 'contact',
+          }"
           role="button"
           tabindex="0"
           @click.stop="focusSatellite(item)"

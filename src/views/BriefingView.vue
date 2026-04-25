@@ -133,6 +133,24 @@ const focusedStation = computed(() => {
 
 const enabledGroundStationCount = computed(() => store.groundStations.filter((station) => station.enabled).length);
 const visibleTrackedObjectCount = computed(() => trackedObjects.value.filter((item) => !item.hidden).length);
+const riskSatelliteIds = computed(() => {
+  const ids = new Set<string>();
+  for (const item of store.filteredConjunctions) {
+    if (cdmSeverity(item) === 'info') continue;
+    addCatalogRiskId(ids, item.primary.catalogNumber);
+    addCatalogRiskId(ids, item.secondary.catalogNumber);
+  }
+  for (const item of store.filteredDecayPredictions) {
+    if (item.intersectsSelectedFleet) {
+      addCatalogRiskId(ids, item.catalogNumber);
+    }
+  }
+  for (const anomaly of store.anomalies) {
+    if (anomaly.closedAt || anomaly.severity === 'INFO') continue;
+    ids.add(refKey(anomaly.satelliteRef));
+  }
+  return [...ids];
+});
 
 const focusedLinks = computed(() => {
   const target = focusedTarget.value;
@@ -197,6 +215,7 @@ const readinessCoverage = computed(() => {
 const activeLayers = computed(() => [
   { label: 'OSM Base Map', detail: 'live raster tiles', active: true },
   { label: 'Fleet Tracks', detail: `${visibleFleetEntries.value.length}/${trackedObjects.value.length} visible`, active: visibleFleetEntries.value.length > 0 },
+  { label: 'Satellite States', detail: `${riskSatelliteIds.value.length} risk · ${contactLinks.value.filter((link) => link.status === 'IN_CONTACT').length} contact`, active: visibleFleetEntries.value.length > 0 },
   { label: 'Ground Stations', detail: `${store.groundStations.filter((station) => station.enabled).length} online`, active: true },
   { label: 'Contact Links', detail: `${contactLinks.value.filter((link) => link.status === 'IN_CONTACT').length} active`, active: contactLinks.value.some((link) => link.status === 'IN_CONTACT') },
   { label: 'Conjunction Risk', detail: `${store.filteredConjunctions.length} windows`, active: store.filteredConjunctions.length > 0 },
@@ -327,6 +346,12 @@ function linkStatusLabel(link: LiveContactLink) {
 
 function cdmSeverity(item: ConjunctionRecord) {
   return classifyConjunctionSeverity(item);
+}
+
+function addCatalogRiskId(ids: Set<string>, catalogNumber: number | undefined) {
+  if (catalogNumber) {
+    ids.add(`catalog:${catalogNumber}`);
+  }
 }
 
 function cdmSeverityLabel(item: ConjunctionRecord) {
@@ -485,6 +510,7 @@ function refKey(member: FleetMemberRef) {
             :live-playback-rate="livePlaybackRate"
             :orbit-mode="orbitMode"
             :orbit-time-iso="displayedOrbitTimeIso"
+            :risk-satellite-ids="riskSatelliteIds"
             :data-saver="store.preferences.dataSaver"
             @focus-target="setFocusedTarget"
           />
@@ -496,6 +522,7 @@ function refKey(member: FleetMemberRef) {
             :ground-stations="store.groundStations"
             :orbit-time-iso="displayedOrbitTimeIso"
             :orbit-mode="orbitMode"
+            :risk-satellite-ids="riskSatelliteIds"
             :data-saver="store.preferences.dataSaver"
             @focus-target="setFocusedTarget"
           />

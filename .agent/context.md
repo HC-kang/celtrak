@@ -66,3 +66,5 @@
 - 2026-04-25: 2D map satellite labels must stay screen-sized while zooming; scale label bounds/rects inversely to map zoom and keep label hitboxes in sync. Pass prediction runs in a Web Worker; for many tracked objects, prioritize focused satellite/station predictions and preserve first pass per pair so AOS/LOS does not fall back to `계산 중` from global truncation.
 
 - 2026-04-25: 2D night mask should indicate darkness without hiding OSM map detail; keep the overlay around rgba alpha 0.48 rather than the previous very dark 0.68.
+
+- 2026-04-25: Satellite colors are semantic now: focused white, risk red, active contact cyan, normal tracked blue. Do not reintroduce order-based rotating satellite palettes because users read colors as state.

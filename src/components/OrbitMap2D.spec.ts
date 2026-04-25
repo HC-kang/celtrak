@@ -90,6 +90,30 @@ describe('OrbitMap2D', () => {
     expect(wrapper.emitted('focus-target')?.[1]).toEqual([{ type: 'satellite', id: 'catalog:25544' }]);
   });
 
+  it('uses semantic satellite colors instead of rotating palette colors', async () => {
+    const wrapper = mount(OrbitMap2D, {
+      props: {
+        satellites: [satelliteEntry],
+        groundStations: [station],
+        contactLinks: [contactLink],
+        riskSatelliteIds: ['catalog:25544'],
+        orbitMode: 'live',
+        orbitTimeIso: '2026-04-25T00:00:00.000Z',
+      },
+    });
+
+    expect(wrapper.find('.orbit-map__track--risk').exists()).toBe(true);
+    expect(wrapper.find('.orbit-map__satellite-core').attributes('fill')).toBe('#ff4d2d');
+
+    await wrapper.setProps({ riskSatelliteIds: [] });
+    expect(wrapper.find('.orbit-map__track--contact').exists()).toBe(true);
+    expect(wrapper.find('.orbit-map__satellite-core').attributes('fill')).toBe('#1eaedb');
+
+    await wrapper.setProps({ focusedTarget: { type: 'satellite', id: 'catalog:25544' } });
+    expect(wrapper.find('.orbit-map__track--focused').exists()).toBe(true);
+    expect(wrapper.find('.orbit-map__satellite-core').attributes('fill')).toBe('#ffffff');
+  });
+
   it('batches high-density satellite rendering into a canvas layer', () => {
     const satellites = Array.from({ length: 24 }, (_, index) => cloneCatalogEntry(25544 + index));
     const wrapper = mount(OrbitMap2D, {

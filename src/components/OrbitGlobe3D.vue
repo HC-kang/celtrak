@@ -13,6 +13,7 @@ const props = defineProps<{
   dataSaver?: boolean;
   orbitTimeIso: string;
   orbitMode: 'live' | 'simulation';
+  riskSatelliteIds?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -23,7 +24,12 @@ const container = ref<HTMLDivElement | null>(null);
 const isInteracting = ref(false);
 const autoRotate = ref(true);
 
-const TRACK_COLORS = ['#53b1ff', '#1eaedb', '#0070cc', '#ffffff', '#d53b00', '#1883fd'];
+const SATELLITE_STATE_COLORS = {
+  focused: '#ffffff',
+  risk: '#ff4d2d',
+  contact: '#1eaedb',
+  tracked: '#53b1ff',
+} as const;
 const EARTH_RADIUS = 1.5;
 const DEFAULT_CAMERA_DISTANCE = 5.45;
 const INITIAL_EARTH_ROTATION = { x: -0.2, y: -0.52, z: 0.02 };
@@ -46,6 +52,7 @@ interface FocusRotationTween {
   to: typeof INITIAL_EARTH_ROTATION;
   startedAt: number;
 }
+type SatelliteVisualTone = keyof typeof SATELLITE_STATE_COLORS;
 
 let renderer: THREE.WebGLRenderer | null = null;
 let scene: THREE.Scene | null = null;
@@ -73,6 +80,10 @@ const trackableCount = computed(() => props.satellites.filter((entry) => Boolean
 const renderLimit = computed(() => (props.dataSaver ? 16 : 44));
 const renderedCountLabel = computed(() => `${Math.min(trackableCount.value, renderLimit.value)}/${trackableCount.value}`);
 const enabledGroundStations = computed(() => (props.groundStations ?? []).filter((station) => station.enabled));
+const activeContactSatelliteIdSet = computed(
+  () => new Set((props.contactLinks ?? []).filter((link) => link.status === 'IN_CONTACT').map((link) => link.satelliteId)),
+);
+const riskSatelliteIdSet = computed(() => new Set(props.riskSatelliteIds ?? []));
 const orbitModeLabel = computed(() => (props.orbitMode === 'simulation' ? 'SIM' : 'LIVE'));
 const clockLabel = computed(() => formatTimestamp(props.orbitTimeIso));
 
@@ -215,10 +226,12 @@ function updateSatellites() {
     const point = getOrbitPoint(satrec, baseTime);
     if (!point) continue;
 
-    const color = new THREE.Color(TRACK_COLORS[index % TRACK_COLORS.length]);
     const group = new THREE.Group();
     group.name = `satellite-${entry.satcat.catalogNumber}`;
     const focusTarget = { type: 'satellite', id: `catalog:${entry.satcat.catalogNumber}` } satisfies MapFocusTarget;
+    const tone = satelliteVisualTone(focusTarget.id);
+    const focused = tone === 'focused';
+    const color = new THREE.Color(SATELLITE_STATE_COLORS[tone]);
 
     const trailPoints = props.dataSaver ? [] : buildTrailPoints(satrec, baseTime);
     if (trailPoints.length > 1) {
@@ -240,7 +253,7 @@ function updateSatellites() {
       new THREE.MeshStandardMaterial({
         color,
         emissive: color,
-        emissiveIntensity: targetMatches(props.focusedTarget, focusTarget) ? 2.6 : 1.25,
+        emissiveIntensity: focused ? 2.6 : tone === 'risk' ? 1.9 : tone === 'contact' ? 1.55 : 1.15,
         roughness: 0.28,
       }),
     );
@@ -249,11 +262,11 @@ function updateSatellites() {
     group.add(marker);
 
     const halo = new THREE.Mesh(
-      new THREE.SphereGeometry(targetMatches(props.focusedTarget, focusTarget) ? 0.18 : 0.12, 22, 22),
+      new THREE.SphereGeometry(focused ? 0.18 : tone === 'risk' ? 0.15 : 0.12, 22, 22),
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: targetMatches(props.focusedTarget, focusTarget) ? 0.34 : 0.18,
+        opacity: focused ? 0.34 : tone === 'risk' ? 0.28 : 0.18,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       }),
@@ -400,6 +413,13 @@ function updateContactLinks() {
     );
     contactLayer.add(line);
   }
+}
+
+function satelliteVisualTone(id: string): SatelliteVisualTone {
+  if (targetMatches(props.focusedTarget, { type: 'satellite', id })) return 'focused';
+  if (riskSatelliteIdSet.value.has(id)) return 'risk';
+  if (activeContactSatelliteIdSet.value.has(id)) return 'contact';
+  return 'tracked';
 }
 
 function getOrbitPoint(satrec: satellite.SatRec, timestamp: Date) {
@@ -1372,8 +1392,15 @@ watch(
   () => props.contactLinks,
   () => {
     updateGroundStations();
+    updateSatellites();
     updateContactLinks();
   },
+  { deep: true },
+);
+
+watch(
+  () => props.riskSatelliteIds,
+  () => updateSatellites(),
   { deep: true },
 );
 
