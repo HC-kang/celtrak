@@ -207,6 +207,27 @@ export interface PassPrediction extends TimestampedOrigin {
   computedAt: string;
 }
 
+export type MapFocusTarget =
+  | { type: 'satellite'; id: string }
+  | { type: 'groundStation'; id: string };
+
+export type LiveContactStatus = 'IN_CONTACT' | 'BEFORE_AOS' | 'AFTER_LOS';
+
+export interface LiveContactLink {
+  satelliteRef: FleetMemberRef;
+  satelliteId: string;
+  satelliteName: string;
+  groundStationId: string;
+  groundStationName: string;
+  elevationDeg: number;
+  azimuthDeg: number;
+  status: LiveContactStatus;
+  aos?: string;
+  tca?: string;
+  los?: string;
+  countdownSeconds?: number;
+}
+
 export interface ImportReport {
   imported: number;
   rejected: number;

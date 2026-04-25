@@ -789,6 +789,171 @@ textarea:focus-visible {
   font-weight: 600;
 }
 
+.focus-inspector {
+  gap: 14px;
+}
+
+.focus-inspector__hero {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.focus-inspector__hero strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.focus-inspector__hero p,
+.focus-inspector__row p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.focus-inspector__actions,
+.focus-inspector__station-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.focus-inspector__station-controls label:not(.setting-toggle) {
+  display: grid;
+  min-width: 150px;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.focus-inspector__section {
+  display: grid;
+  gap: 9px;
+}
+
+.focus-inspector__section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.focus-inspector__section > span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.focus-inspector__section-heading > span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.focus-inspector__section-heading small {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.focus-inspector__station-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.focus-inspector__station-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.focus-inspector__station-toggle--active {
+  border-color: rgba(83, 177, 255, 0.46);
+  background: rgba(0, 112, 204, 0.16);
+}
+
+.focus-inspector__station-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.focus-inspector__station-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.focus-inspector__station-toggle span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.focus-inspector__station-toggle strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-inspector__station-toggle small {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.72rem;
+}
+
+.focus-inspector__row {
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.055);
+  border-left: 3px solid rgba(83, 177, 255, 0.68);
+}
+
+.focus-inspector__row strong {
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.focus-inspector__row--in-contact,
+.focus-inspector__row--critical {
+  border-left-color: var(--critical);
+}
+
+.focus-inspector__row--before-aos,
+.focus-inspector__row--warn {
+  border-left-color: var(--warn);
+}
+
+.focus-inspector__row--after-los,
+.focus-inspector__row--info {
+  border-left-color: rgba(83, 177, 255, 0.68);
+}
+
 .war-room__feed,
 .war-room__layers {
   display: grid;
@@ -1053,6 +1218,20 @@ textarea:focus-visible {
 .stack-list__item--accent {
   border-color: rgba(0, 112, 204, 0.28);
   background: rgba(0, 112, 204, 0.08);
+}
+
+.stack-list__item--critical {
+  border-color: rgba(200, 27, 58, 0.38);
+  background: rgba(200, 27, 58, 0.08);
+}
+
+.stack-list__item--warn {
+  border-color: rgba(213, 59, 0, 0.34);
+  background: rgba(213, 59, 0, 0.08);
+}
+
+.stack-list__item--info {
+  border-color: rgba(83, 177, 255, 0.24);
 }
 
 .table-like__row--muted {
@@ -1589,6 +1768,36 @@ textarea:focus-visible {
   min-width: min(100%, 420px);
 }
 
+.orbit-map__top-actions--3d {
+  min-width: min(100%, 320px);
+}
+
+.orbit-map__rotate-toggle {
+  display: inline-grid;
+  min-height: 42px;
+  place-items: center;
+  padding: 0 14px;
+  border-radius: 999px;
+  color: var(--surface);
+  background: rgba(0, 0, 0, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(14px);
+  font-size: 0.82rem;
+  font-weight: 800;
+  white-space: nowrap;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.orbit-map__rotate-toggle:hover,
+.orbit-map__rotate-toggle[aria-pressed="true"] {
+  background: rgba(0, 112, 204, 0.58);
+  border-color: rgba(83, 177, 255, 0.64);
+  box-shadow: 0 0 0 3px rgba(0, 112, 204, 0.2);
+}
+
 .orbit-map__nav {
   display: inline-flex;
   align-items: center;
@@ -1767,6 +1976,38 @@ textarea:focus-visible {
   stroke-width: 3px;
 }
 
+.orbit-map__night-mask {
+  fill: rgba(2, 6, 23, 0.56);
+  stroke: rgba(83, 177, 255, 0.08);
+  stroke-width: 0.6;
+  mix-blend-mode: multiply;
+  shape-rendering: geometricPrecision;
+}
+
+.orbit-map__contact-link path {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.68);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 8 8;
+  filter: url("#orbitGlow");
+}
+
+.orbit-map__contact-link--focused path {
+  stroke: #ffffff;
+  stroke-width: 3.2;
+  stroke-dasharray: none;
+}
+
+.orbit-map__contact-link text {
+  fill: #ffffff;
+  font-size: 10px;
+  font-weight: 800;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.86);
+  stroke-width: 3px;
+}
+
 .orbit-map__trail {
   fill: none;
   stroke-width: 2.6;
@@ -1812,6 +2053,27 @@ textarea:focus-visible {
   font-weight: 500;
 }
 
+.orbit-map__track,
+.orbit-map__station {
+  cursor: pointer;
+  outline: none;
+}
+
+.orbit-map__track--focused .orbit-map__satellite-ping {
+  opacity: 0.82;
+  stroke-width: 3.4;
+}
+
+.orbit-map__track--focused .orbit-map__satellite-core {
+  stroke: #ffffff;
+  stroke-width: 4;
+}
+
+.orbit-map__track--focused .orbit-map__satellite-label rect {
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
 .orbit-map__station {
   fill: url("#stationBeam");
   filter: url("#orbitGlow");
@@ -1832,6 +2094,13 @@ textarea:focus-visible {
   paint-order: stroke;
   stroke: rgba(0, 0, 0, 0.9);
   stroke-width: 3px;
+}
+
+.orbit-map__station--focused .orbit-map__station-range {
+  fill: rgba(255, 255, 255, 0.12);
+  stroke: #ffffff;
+  stroke-width: 2.4;
+  stroke-dasharray: none;
 }
 
 @keyframes satellite-pulse {

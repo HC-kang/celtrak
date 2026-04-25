@@ -2,19 +2,26 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import * as THREE from 'three';
 import * as satellite from 'satellite.js';
-import type { CatalogEntry, GroundStation } from '@/domain/types';
+import type { CatalogEntry, GroundStation, LiveContactLink, MapFocusTarget } from '@/domain/types';
 import { formatTimestamp } from '@/lib/format';
 
 const props = defineProps<{
   satellites: CatalogEntry[];
+  contactLinks?: LiveContactLink[];
+  focusedTarget?: MapFocusTarget | null;
   groundStations?: GroundStation[];
   dataSaver?: boolean;
   orbitTimeIso: string;
   orbitMode: 'live' | 'simulation';
 }>();
 
+const emit = defineEmits<{
+  'focus-target': [target: MapFocusTarget];
+}>();
+
 const container = ref<HTMLDivElement | null>(null);
 const isInteracting = ref(false);
+const autoRotate = ref(true);
 
 const TRACK_COLORS = ['#53b1ff', '#1eaedb', '#0070cc', '#ffffff', '#d53b00', '#1883fd'];
 const EARTH_RADIUS = 1.5;
@@ -37,14 +44,18 @@ let earthRig: THREE.Group | null = null;
 let globeLayer: THREE.Group | null = null;
 let satelliteLayer: THREE.Group | null = null;
 let stationLayer: THREE.Group | null = null;
+let contactLayer: THREE.Group | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let frameHandle = 0;
 let timer: number | null = null;
 let currentCameraDistance = DEFAULT_CAMERA_DISTANCE;
 let targetCameraDistance = DEFAULT_CAMERA_DISTANCE;
 let pointerStart: { x: number; y: number; rotationX: number; rotationY: number } | null = null;
+let pointerDownSnapshot: PointerSnapshot | null = null;
 let pinchState: GlobePinchState | null = null;
 const activePointers = new Map<number, PointerSnapshot>();
+const raycaster = new THREE.Raycaster();
+const pointerVector = new THREE.Vector2();
 
 const trackableCount = computed(() => props.satellites.filter((entry) => Boolean(entry.tle)).length);
 const renderLimit = computed(() => (props.dataSaver ? 16 : 44));
@@ -88,11 +99,13 @@ function buildScene() {
   globeLayer = new THREE.Group();
   satelliteLayer = new THREE.Group();
   stationLayer = new THREE.Group();
-  earthRig.add(globeLayer, stationLayer, satelliteLayer);
+  contactLayer = new THREE.Group();
+  earthRig.add(globeLayer, stationLayer, contactLayer, satelliteLayer);
 
   buildGlobe();
   updateGroundStations();
   updateSatellites();
+  updateContactLinks();
   addRendererInteractions();
 
   resizeObserver = new ResizeObserver(resizeRenderer);
@@ -192,6 +205,7 @@ function updateSatellites() {
     const color = new THREE.Color(TRACK_COLORS[index % TRACK_COLORS.length]);
     const group = new THREE.Group();
     group.name = `satellite-${entry.satcat.catalogNumber}`;
+    const focusTarget = { type: 'satellite', id: `catalog:${entry.satcat.catalogNumber}` } satisfies MapFocusTarget;
 
     const trailPoints = props.dataSaver ? [] : buildTrailPoints(satrec, baseTime);
     if (trailPoints.length > 1) {
@@ -204,6 +218,7 @@ function updateSatellites() {
           depthWrite: false,
         }),
       );
+      trail.raycast = () => {};
       group.add(trail);
     }
 
@@ -212,29 +227,45 @@ function updateSatellites() {
       new THREE.MeshStandardMaterial({
         color,
         emissive: color,
-        emissiveIntensity: 1.25,
+        emissiveIntensity: targetMatches(props.focusedTarget, focusTarget) ? 2.6 : 1.25,
         roughness: 0.28,
       }),
     );
     marker.position.copy(point.position);
+    marker.userData.focusTarget = focusTarget;
     group.add(marker);
 
     const halo = new THREE.Mesh(
-      new THREE.SphereGeometry(0.12, 22, 22),
+      new THREE.SphereGeometry(targetMatches(props.focusedTarget, focusTarget) ? 0.18 : 0.12, 22, 22),
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.18,
+        opacity: targetMatches(props.focusedTarget, focusTarget) ? 0.34 : 0.18,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       }),
     );
     halo.position.copy(point.position);
+    halo.raycast = () => {};
     group.add(halo);
+
+    const picker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.13, 12, 12),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      }),
+    );
+    picker.position.copy(point.position);
+    picker.userData.focusTarget = focusTarget;
+    group.add(picker);
 
     if (index < (props.dataSaver ? 4 : 10)) {
       const label = createLabelSprite(shortSatelliteName(entry), altitudeLabel(point.altitudeKm), color);
       label.position.copy(point.position).multiplyScalar(1.08);
+      label.raycast = () => {};
       group.add(label);
     }
 
@@ -250,6 +281,7 @@ function updateGroundStations() {
   for (const [index, station] of stations.entries()) {
     const color = new THREE.Color(index % 3 === 0 ? '#ffffff' : '#53b1ff');
     const group = new THREE.Group();
+    const focusTarget = { type: 'groundStation', id: station.id } satisfies MapFocusTarget;
     const surface = latLonToVector(station.latDeg, station.lonDeg, EARTH_RADIUS + 0.035);
     const normal = surface.clone().normalize();
 
@@ -258,10 +290,11 @@ function updateGroundStations() {
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.95,
+        opacity: targetMatches(props.focusedTarget, focusTarget) ? 1 : 0.95,
       }),
     );
     marker.position.copy(surface);
+    marker.userData.focusTarget = focusTarget;
     group.add(marker);
 
     const ring = new THREE.Mesh(
@@ -276,6 +309,7 @@ function updateGroundStations() {
     );
     ring.position.copy(surface);
     ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+    ring.raycast = () => {};
     group.add(ring);
 
     const beam = new THREE.Line(
@@ -287,16 +321,65 @@ function updateGroundStations() {
         depthWrite: false,
       }),
     );
+    beam.raycast = () => {};
     group.add(beam);
+
+    const picker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.08, 10, 10),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      }),
+    );
+    picker.position.copy(surface);
+    picker.userData.focusTarget = focusTarget;
+    group.add(picker);
 
     if (index < (props.dataSaver ? 4 : 10)) {
       const label = createLabelSprite(station.name, `${station.elevationMaskDeg} deg mask`, color);
       label.position.copy(surface).multiplyScalar(1.14);
       label.scale.set(0.64, 0.18, 1);
+      label.raycast = () => {};
       group.add(label);
     }
 
     stationLayer.add(group);
+  }
+}
+
+function updateContactLinks() {
+  if (!contactLayer) return;
+  clearContactLayer();
+
+  const baseTime = new Date(props.orbitTimeIso);
+  const entries = new Map(props.satellites.filter((entry) => entry.tle).map((entry) => [`catalog:${entry.satcat.catalogNumber}`, entry]));
+  const stations = new Map(enabledGroundStations.value.map((station) => [station.id, station]));
+  const links = (props.contactLinks ?? []).filter((link) => link.status === 'IN_CONTACT').slice(0, props.dataSaver ? 12 : 32);
+
+  for (const link of links) {
+    const entry = entries.get(link.satelliteId);
+    const station = stations.get(link.groundStationId);
+    if (!entry?.tle || !station) continue;
+    const satrec = satellite.twoline2satrec(entry.tle.line1, entry.tle.line2);
+    const orbitPoint = getOrbitPoint(satrec, baseTime);
+    if (!orbitPoint) continue;
+    const stationPoint = latLonToVector(station.latDeg, station.lonDeg, EARTH_RADIUS + 0.045);
+    const focused =
+      targetMatches(props.focusedTarget, { type: 'satellite', id: link.satelliteId }) ||
+      targetMatches(props.focusedTarget, { type: 'groundStation', id: link.groundStationId });
+    const color = new THREE.Color(focused ? '#ffffff' : '#1eaedb');
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([stationPoint, orbitPoint.position]),
+      new THREE.LineBasicMaterial({
+        color,
+        transparent: true,
+        opacity: focused ? 0.86 : 0.42,
+        depthWrite: false,
+      }),
+    );
+    contactLayer.add(line);
   }
 }
 
@@ -894,6 +977,7 @@ function handlePointerDown(event: PointerEvent) {
   if (!earthRig || !renderer) return;
   if (event.pointerType === 'mouse' && event.button !== 0) return;
   event.preventDefault();
+  pointerDownSnapshot = { x: event.clientX, y: event.clientY };
   activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
   renderer.domElement.setPointerCapture(event.pointerId);
 
@@ -935,6 +1019,7 @@ function handlePointerMove(event: PointerEvent) {
 }
 
 function handlePointerUp(event: PointerEvent) {
+  const shouldFocus = pointerDownSnapshot && pointerDistance(pointerDownSnapshot, { x: event.clientX, y: event.clientY }) < 6 && activePointers.size <= 1;
   if (renderer?.domElement.hasPointerCapture(event.pointerId)) {
     renderer.domElement.releasePointerCapture(event.pointerId);
   }
@@ -945,9 +1030,14 @@ function handlePointerUp(event: PointerEvent) {
     const [remainingPointerId, pointer] = Array.from(activePointers.entries())[0];
     void remainingPointerId;
     beginRotation(pointer.x, pointer.y);
+    pointerDownSnapshot = null;
     return;
   }
 
+  if (shouldFocus) {
+    focusObjectAt(event.clientX, event.clientY);
+  }
+  pointerDownSnapshot = null;
   pointerStart = null;
   isInteracting.value = false;
 }
@@ -955,6 +1045,10 @@ function handlePointerUp(event: PointerEvent) {
 function handleWheel(event: WheelEvent) {
   event.preventDefault();
   targetCameraDistance = THREE.MathUtils.clamp(targetCameraDistance + event.deltaY * 0.004, 3.45, 8.2);
+}
+
+function toggleAutoRotate() {
+  autoRotate.value = !autoRotate.value;
 }
 
 function beginPinch() {
@@ -984,11 +1078,34 @@ function pointerDistance(first: PointerSnapshot, second: PointerSnapshot) {
   return Math.hypot(first.x - second.x, first.y - second.y);
 }
 
+function focusObjectAt(clientX: number, clientY: number) {
+  if (!renderer || !camera || !earthRig) return;
+  const bounds = renderer.domElement.getBoundingClientRect();
+  pointerVector.x = ((clientX - bounds.left) / bounds.width) * 2 - 1;
+  pointerVector.y = -(((clientY - bounds.top) / bounds.height) * 2 - 1);
+  raycaster.setFromCamera(pointerVector, camera);
+  const intersections = raycaster.intersectObjects([satelliteLayer, stationLayer].filter(Boolean) as THREE.Object3D[], true);
+  const target = intersections.map((item) => findFocusTarget(item.object)).find(Boolean);
+  if (target) {
+    emit('focus-target', target);
+  }
+}
+
+function findFocusTarget(object: THREE.Object3D | null): MapFocusTarget | null {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    const target = current.userData.focusTarget as MapFocusTarget | undefined;
+    if (target) return target;
+    current = current.parent;
+  }
+  return null;
+}
+
 function animate() {
   if (!renderer || !scene || !camera) return;
   frameHandle = requestAnimationFrame(animate);
 
-  if (earthRig && !isInteracting.value) {
+  if (earthRig && autoRotate.value && !isInteracting.value) {
     earthRig.rotation.y += props.dataSaver ? 0.00055 : 0.0009;
   }
 
@@ -1033,6 +1150,14 @@ function clearStationLayer() {
   }
 }
 
+function clearContactLayer() {
+  if (!contactLayer) return;
+  for (const child of [...contactLayer.children]) {
+    contactLayer.remove(child);
+    disposeObject(child);
+  }
+}
+
 function disposeObject(object: THREE.Object3D) {
   object.traverse((child) => {
     const maybeMesh = child as THREE.Mesh;
@@ -1064,7 +1189,10 @@ function syncTimer() {
     timer = null;
   }
   if (props.orbitMode === 'simulation') return;
-  timer = window.setInterval(updateSatellites, props.dataSaver ? 4200 : 1200);
+  timer = window.setInterval(() => {
+    updateSatellites();
+    updateContactLinks();
+  }, props.dataSaver ? 4200 : 1200);
 }
 
 function shortSatelliteName(entry: CatalogEntry) {
@@ -1074,6 +1202,10 @@ function shortSatelliteName(entry: CatalogEntry) {
 
 function altitudeLabel(altitudeKm: number) {
   return `${Math.round(altitudeKm).toLocaleString()} km scaled altitude`;
+}
+
+function targetMatches(left: MapFocusTarget | null | undefined, right: MapFocusTarget | undefined) {
+  return Boolean(left && right && left.type === right.type && left.id === right.id);
 }
 
 function radiansToDegrees(value: number) {
@@ -1087,13 +1219,19 @@ onMounted(() => {
 
 watch(
   () => props.satellites,
-  () => updateSatellites(),
+  () => {
+    updateSatellites();
+    updateContactLinks();
+  },
   { deep: true },
 );
 
 watch(
   () => props.groundStations,
-  () => updateGroundStations(),
+  () => {
+    updateGroundStations();
+    updateContactLinks();
+  },
   { deep: true },
 );
 
@@ -1102,8 +1240,25 @@ watch(
   () => {
     if (props.orbitMode === 'simulation') {
       updateSatellites();
+      updateContactLinks();
     }
   },
+);
+
+watch(
+  () => props.contactLinks,
+  () => updateContactLinks(),
+  { deep: true },
+);
+
+watch(
+  () => props.focusedTarget,
+  () => {
+    updateSatellites();
+    updateGroundStations();
+    updateContactLinks();
+  },
+  { deep: true },
 );
 
 watch(
@@ -1111,6 +1266,7 @@ watch(
   () => {
     updateGroundStations();
     updateSatellites();
+    updateContactLinks();
     syncTimer();
   },
 );
@@ -1145,9 +1301,19 @@ onBeforeUnmount(() => {
         <strong>3D Orbit Globe</strong>
         <small class="orbit-map__hud-note">SGP4 tracks with scaled altitude bands</small>
       </div>
-      <div class="orbit-map__clock">
-        <span>{{ orbitModeLabel }}</span>
-        <small>{{ clockLabel }}</small>
+      <div class="orbit-map__top-actions orbit-map__top-actions--3d">
+        <button
+          class="orbit-map__rotate-toggle"
+          type="button"
+          :aria-pressed="!autoRotate"
+          @click="toggleAutoRotate"
+        >
+          {{ autoRotate ? '회전 정지' : '회전 재개' }}
+        </button>
+        <div class="orbit-map__clock">
+          <span>{{ orbitModeLabel }}</span>
+          <small>{{ clockLabel }}</small>
+        </div>
       </div>
     </div>
 

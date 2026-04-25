@@ -1,15 +1,22 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import * as satellite from 'satellite.js';
-import type { CatalogEntry, GroundStation } from '@/domain/types';
+import type { CatalogEntry, GroundStation, LiveContactLink, MapFocusTarget } from '@/domain/types';
+import { createNightMaskPath } from '@/lib/solarTerminator';
 
 const props = defineProps<{
   satellites: CatalogEntry[];
+  contactLinks?: LiveContactLink[];
   dataSaver?: boolean;
+  focusedTarget?: MapFocusTarget | null;
   groundStations?: GroundStation[];
   livePlaybackRate?: number;
   orbitMode: 'live' | 'simulation';
   orbitTimeIso: string;
+}>();
+
+const emit = defineEmits<{
+  'focus-target': [target: MapFocusTarget];
 }>();
 
 const BASE_TILE_ZOOM = 2;
@@ -33,6 +40,7 @@ const userMovedMap = ref(false);
 let resizeObserver: ResizeObserver | null = null;
 let dragState: DragState | null = null;
 let pinchState: PinchState | null = null;
+let pointerDownSnapshot: PointerDownSnapshot | null = null;
 const activePointers = new Map<number, PointerSnapshot>();
 
 onMounted(() => {
@@ -61,6 +69,7 @@ const stationPoints = computed(() =>
     id: station.id,
     ...toMapPoint(station.lonDeg, station.latDeg),
     name: station.name,
+    elevationMaskDeg: station.elevationMaskDeg,
     labelAnchor: index % 2 === 0 ? 'start' : 'end',
   })),
 );
@@ -68,7 +77,7 @@ const stationPoints = computed(() =>
 const livePlaybackRate = computed(() => props.livePlaybackRate ?? 1);
 const displayedTime = computed(() => new Date(props.orbitTimeIso));
 const displayedTimestamp = computed(() => formatTimestampWithSeconds(displayedTime.value));
-const terminatorOffset = computed(() => ((displayedTime.value.getUTCHours() * 60 + displayedTime.value.getUTCMinutes()) / 1440) * 100);
+const nightMaskPath = computed(() => createNightMaskPath(displayedTime.value, MAP_WIDTH, MAP_HEIGHT));
 const viewportAspect = computed(() => viewportSize.value.width / viewportSize.value.height);
 const coverZoom = computed(() => Math.max(1, MAP_WIDTH / (MAP_HEIGHT * viewportAspect.value)));
 const currentView = computed(() => {
@@ -98,12 +107,31 @@ const plotted = computed(() =>
       const mapPoint = toMapPoint(point.lon, point.lat);
       const trail = props.dataSaver ? [] : buildTrail(satrec, displayedTime.value);
       return {
+        id: `catalog:${entry.satcat.catalogNumber}`,
         entry,
         color: TRACK_COLORS[index % TRACK_COLORS.length],
         label: entry.satcat.objectName.replace(/\s*\(.+?\)\s*/g, '').slice(0, 18),
         point: mapPoint,
         geo: point,
         trailSegments: splitTrail(trail),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item)),
+);
+
+const activeContactSegments = computed(() =>
+  (props.contactLinks ?? [])
+    .filter((link) => link.status === 'IN_CONTACT')
+    .map((link) => {
+      const satellitePoint = plotted.value.find((item) => item.id === link.satelliteId);
+      const stationPoint = stationPoints.value.find((station) => station.id === link.groundStationId);
+      if (!satellitePoint || !stationPoint) return null;
+      return {
+        id: `${link.satelliteId}-${link.groundStationId}`,
+        link,
+        satellite: satellitePoint,
+        station: stationPoint,
+        focused: targetMatches(props.focusedTarget, { type: 'satellite', id: link.satelliteId }) || targetMatches(props.focusedTarget, { type: 'groundStation', id: link.groundStationId }),
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item)),
@@ -222,9 +250,18 @@ function onPointerDown(event: PointerEvent) {
   event.preventDefault();
   userMovedMap.value = true;
   activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  pointerDownSnapshot =
+    activePointers.size === 1
+      ? {
+          pointerId: event.pointerId,
+          x: event.clientX,
+          y: event.clientY,
+        }
+      : null;
   svgElement.value?.setPointerCapture(event.pointerId);
 
   if (activePointers.size >= 2) {
+    pointerDownSnapshot = null;
     beginPinch();
     return;
   }
@@ -249,6 +286,11 @@ function onPointerMove(event: PointerEvent) {
 }
 
 function onPointerUp(event: PointerEvent) {
+  const shouldFocus =
+    event.type !== 'pointerleave' &&
+    pointerDownSnapshot?.pointerId === event.pointerId &&
+    pointerDistance(pointerDownSnapshot, { x: event.clientX, y: event.clientY }) < 7 &&
+    activePointers.size <= 1;
   if (svgElement.value?.hasPointerCapture(event.pointerId)) {
     svgElement.value?.releasePointerCapture(event.pointerId);
   }
@@ -258,9 +300,14 @@ function onPointerUp(event: PointerEvent) {
   if (activePointers.size === 1) {
     const [pointerId, pointer] = Array.from(activePointers.entries())[0];
     beginDrag(pointerId, pointer.x, pointer.y);
+    pointerDownSnapshot = null;
     return;
   }
 
+  if (shouldFocus) {
+    focusNearestMapTarget(event.clientX, event.clientY);
+  }
+  pointerDownSnapshot = null;
   dragging.value = false;
   dragState = null;
 }
@@ -342,7 +389,7 @@ function eventToMapPoint(event: MouseEvent) {
 function clientToMapPoint(clientX: number, clientY: number) {
   const bounds = svgElement.value?.getBoundingClientRect();
   const view = currentView.value;
-  if (!bounds) return { x: center.value.x, y: center.value.y };
+  if (!bounds || !bounds.width || !bounds.height) return { x: center.value.x, y: center.value.y };
   const ratioX = clamp((clientX - bounds.left) / bounds.width, 0, 1);
   const ratioY = clamp((clientY - bounds.top) / bounds.height, 0, 1);
   return {
@@ -434,6 +481,54 @@ function formatCoordinate(value: number, axis: 'lat' | 'lon') {
   return `${Math.abs(value).toFixed(1)}°${direction}`;
 }
 
+function focusSatellite(item: { id: string }) {
+  emit('focus-target', { type: 'satellite', id: item.id });
+}
+
+function focusGroundStation(station: { id: string }) {
+  emit('focus-target', { type: 'groundStation', id: station.id });
+}
+
+function focusNearestMapTarget(clientX: number, clientY: number) {
+  const point = clientToMapPoint(clientX, clientY);
+  const hitRadius = Math.max((currentView.value.width / viewportSize.value.width) * 32, 14);
+  const satelliteHit = nearestByDistance(
+    plotted.value.map((item) => ({ target: { type: 'satellite', id: item.id } satisfies MapFocusTarget, point: item.point })),
+    point,
+  );
+  if (satelliteHit && satelliteHit.distance <= hitRadius) {
+    emit('focus-target', satelliteHit.target);
+    return;
+  }
+
+  const stationHit = nearestByDistance(
+    stationPoints.value.map((station) => ({ target: { type: 'groundStation', id: station.id } satisfies MapFocusTarget, point: station })),
+    point,
+  );
+  if (stationHit && stationHit.distance <= hitRadius) {
+    emit('focus-target', stationHit.target);
+  }
+}
+
+function nearestByDistance(items: Array<{ target: MapFocusTarget; point: MapPoint }>, point: MapPoint) {
+  let nearest: { target: MapFocusTarget; distance: number } | null = null;
+  for (const item of items) {
+    const distance = Math.hypot(item.point.x - point.x, item.point.y - point.y);
+    if (!nearest || distance < nearest.distance) {
+      nearest = { target: item.target, distance };
+    }
+  }
+  return nearest;
+}
+
+function targetMatches(left: MapFocusTarget | null | undefined, right: MapFocusTarget) {
+  return Boolean(left && left.type === right.type && left.id === right.id);
+}
+
+function linkLabel(link: LiveContactLink) {
+  return `${link.elevationDeg.toFixed(0)}° / ${link.azimuthDeg.toFixed(0)}°`;
+}
+
 function formatTimestampWithSeconds(date: Date) {
   return new Intl.DateTimeFormat('ko-KR', {
     month: 'short',
@@ -470,6 +565,10 @@ interface DragState {
 interface PointerSnapshot {
   x: number;
   y: number;
+}
+
+interface PointerDownSnapshot extends PointerSnapshot {
+  pointerId: number;
 }
 
 interface PinchState {
@@ -562,17 +661,38 @@ interface PinchState {
         <path v-for="y in latitudeLines" :key="`lat-${y}`" :d="`M 0 ${y} H ${MAP_WIDTH}`" />
       </g>
 
-      <rect
-        :x="Math.max(-MAP_WIDTH * 0.2, (terminatorOffset / 100) * MAP_WIDTH - MAP_WIDTH * 0.55)"
-        y="0"
-        :width="MAP_WIDTH * 0.75"
-        :height="MAP_HEIGHT"
-        fill="url(#orbitTerminator)"
-        opacity="0.78"
-      />
+      <path class="orbit-map__night-mask" :d="nightMaskPath" fill-rule="evenodd" />
+
+      <g class="orbit-map__contact-links">
+        <g
+          v-for="segment in activeContactSegments"
+          :key="segment.id"
+          class="orbit-map__contact-link"
+          :class="{ 'orbit-map__contact-link--focused': segment.focused }"
+        >
+          <path
+            :d="`M ${segment.station.x.toFixed(1)} ${segment.station.y.toFixed(1)} L ${segment.satellite.point.x.toFixed(1)} ${segment.satellite.point.y.toFixed(1)}`"
+          />
+          <text
+            :x="(segment.station.x + segment.satellite.point.x) / 2"
+            :y="(segment.station.y + segment.satellite.point.y) / 2 - 8"
+          >
+            {{ linkLabel(segment.link) }}
+          </text>
+        </g>
+      </g>
 
       <g class="orbit-map__stations">
-        <g v-for="station in stationPoints" :key="station.id" class="orbit-map__station">
+        <g
+          v-for="station in stationPoints"
+          :key="station.id"
+          class="orbit-map__station"
+          :class="{ 'orbit-map__station--focused': targetMatches(props.focusedTarget, { type: 'groundStation', id: station.id }) }"
+          role="button"
+          tabindex="0"
+          @click.stop="focusGroundStation(station)"
+          @keyup.enter.stop="focusGroundStation(station)"
+        >
           <circle :cx="station.x" :cy="station.y" r="26" class="orbit-map__station-range" />
           <circle :cx="station.x" :cy="station.y" r="7" />
           <text
@@ -585,7 +705,16 @@ interface PinchState {
         </g>
       </g>
 
-      <g v-for="item in plotted" :key="item.entry.satcat.catalogNumber" class="orbit-map__track">
+      <g
+        v-for="item in plotted"
+        :key="item.entry.satcat.catalogNumber"
+        class="orbit-map__track"
+        :class="{ 'orbit-map__track--focused': targetMatches(props.focusedTarget, { type: 'satellite', id: item.id }) }"
+        role="button"
+        tabindex="0"
+        @click.stop="focusSatellite(item)"
+        @keyup.enter.stop="focusSatellite(item)"
+      >
         <path
           v-for="(segment, segmentIndex) in item.trailSegments"
           :key="`${item.entry.satcat.catalogNumber}-${segmentIndex}`"

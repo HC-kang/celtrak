@@ -12,7 +12,9 @@ import { useAppStore } from '@/stores/app';
 import { useViewport } from '@/composables/useViewport';
 import { formatPercent, formatRelative, formatTimestamp, truncate } from '@/lib/format';
 import { usePassPredictions } from '@/composables/usePassPredictions';
-import type { FleetMemberRef } from '@/domain/types';
+import { buildLiveContactLinks } from '@/lib/contactLinks';
+import { classifyConjunctionSeverity, conjunctionSeverityRank } from '@/lib/conjunctionRisk';
+import type { CatalogEntry, ConjunctionRecord, FleetMemberRef, GroundStation, LiveContactLink, MapFocusTarget } from '@/domain/types';
 
 const OrbitGlobe3D = defineAsyncComponent(() => import('@/components/OrbitGlobe3D.vue'));
 const store = useAppStore();
@@ -23,6 +25,7 @@ const liveOrbitAnchor = ref(Date.now());
 const orbitClockTick = ref(Date.now());
 const mapControlsOpen = ref(false);
 const mapFocusMode = ref(false);
+const focusedTarget = ref<MapFocusTarget | null>(null);
 let orbitClockTimer: number | null = null;
 usePassPredictions();
 
@@ -38,11 +41,35 @@ onUnmounted(() => {
   }
 });
 
-const visibleFleetEntries = computed(() =>
+const visibleFleetEntries = computed<CatalogEntry[]>(() =>
   (store.selectedFleet?.memberRefs ?? [])
     .filter((member) => !store.isFleetMemberHidden(member))
     .map((member) => store.catalog.find((entry) => entry.satcat.catalogNumber === member.catalogNumber))
-    .filter(Boolean),
+    .filter((entry): entry is CatalogEntry => Boolean(entry)),
+);
+
+const contactSatellites = computed(() =>
+  (store.selectedFleet?.memberRefs ?? [])
+    .filter((member) => member.refType === 'catalog' && !store.isFleetMemberHidden(member))
+    .map((member) => {
+      const entry = store.catalog.find((item) => item.satcat.catalogNumber === member.catalogNumber);
+      if (!entry?.tle) return null;
+      return {
+        satelliteRef: cloneFleetMemberRef(member),
+        name: member.displayName ?? entry.satcat.objectName,
+        tle: { ...entry.tle },
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item)),
+);
+
+const contactLinks = computed(() =>
+  buildLiveContactLinks({
+    satellites: contactSatellites.value,
+    stations: store.groundStations,
+    timestampIso: displayedOrbitTimeIso.value,
+    passPredictions: store.passPredictions,
+  }),
 );
 
 const trackedObjects = computed(() =>
@@ -89,6 +116,41 @@ const satelliteLookup = computed(() =>
   ),
 );
 
+const focusedSatellite = computed(() => {
+  if (focusedTarget.value?.type !== 'satellite') return null;
+  const catalogNumber = catalogNumberFromSatelliteId(focusedTarget.value.id);
+  if (!catalogNumber) return null;
+  const entry = visibleFleetEntries.value.find((item) => item?.satcat.catalogNumber === catalogNumber);
+  const member = (store.selectedFleet?.memberRefs ?? []).find((item) => item.refType === 'catalog' && item.catalogNumber === catalogNumber);
+  return entry && member ? { entry, member } : null;
+});
+
+const focusedStation = computed(() => {
+  if (focusedTarget.value?.type !== 'groundStation') return null;
+  return store.groundStations.find((station) => station.id === focusedTarget.value?.id) ?? null;
+});
+
+const enabledGroundStationCount = computed(() => store.groundStations.filter((station) => station.enabled).length);
+
+const focusedLinks = computed(() => {
+  const target = focusedTarget.value;
+  if (!target) return contactLinks.value.filter((link) => link.status === 'IN_CONTACT').slice(0, 4);
+  return contactLinks.value
+    .filter((link) => (target.type === 'satellite' ? link.satelliteId === target.id : link.groundStationId === target.id))
+    .slice(0, 6);
+});
+
+const focusedConjunctions = computed(() => {
+  const target = focusedTarget.value;
+  if (target?.type !== 'satellite') return store.filteredConjunctions.slice(0, 3);
+  const catalogNumber = catalogNumberFromSatelliteId(target.id);
+  if (!catalogNumber) return [];
+  return store.filteredConjunctions
+    .filter((item) => item.primary.catalogNumber === catalogNumber || item.secondary.catalogNumber === catalogNumber)
+    .sort((left, right) => conjunctionSeverityRank(cdmSeverity(left)) - conjunctionSeverityRank(cdmSeverity(right)) || left.tca.localeCompare(right.tca))
+    .slice(0, 4);
+});
+
 const renderMode = computed(() => {
   if (store.preferences.dataSaver) return '2d';
   if (viewport.breakpoint.value === 'xs' || viewport.breakpoint.value === 'sm') return store.preferences.mobileRenderMode;
@@ -134,6 +196,7 @@ const activeLayers = computed(() => [
   { label: 'OSM Base Map', detail: 'live raster tiles', active: true },
   { label: 'Fleet Tracks', detail: `${visibleFleetEntries.value.length}/${trackedObjects.value.length} visible`, active: visibleFleetEntries.value.length > 0 },
   { label: 'Ground Stations', detail: `${store.groundStations.filter((station) => station.enabled).length} online`, active: true },
+  { label: 'Contact Links', detail: `${contactLinks.value.filter((link) => link.status === 'IN_CONTACT').length} active`, active: contactLinks.value.some((link) => link.status === 'IN_CONTACT') },
   { label: 'Conjunction Risk', detail: `${store.filteredConjunctions.length} windows`, active: store.filteredConjunctions.length > 0 },
   { label: 'Space Weather', detail: store.weather?.kp.storm ?? (store.loading ? '불러오는 중' : '데이터 없음'), active: Boolean(store.weather) },
   { label: 'Decay Watch', detail: `${store.filteredDecayPredictions.length} entries`, active: store.filteredDecayPredictions.length > 0 },
@@ -155,7 +218,7 @@ const intelQueue = computed(() =>
       title: `${item.primary.name} × ${item.secondary.name}`,
       detail: `${item.missDistanceKm.toFixed(1)} km miss · ${item.relVelocityKmS.toFixed(1)} km/s`,
       time: formatRelative(item.tca),
-      tone: item.missDistanceKm < 15 ? 'critical' : 'warn',
+      tone: cdmSeverity(item),
     })),
     ...store.filteredDecayPredictions.slice(0, 1).map((item) => ({
       id: `decay-${item.catalogNumber}`,
@@ -236,6 +299,66 @@ function toggleMapFocusMode() {
   if (mapFocusMode.value) {
     mapControlsOpen.value = false;
   }
+}
+
+function setFocusedTarget(target: MapFocusTarget) {
+  focusedTarget.value = target;
+}
+
+function clearFocusedTarget() {
+  focusedTarget.value = null;
+}
+
+function formatCountdown(seconds: number | undefined) {
+  if (seconds === undefined) return '계산 중';
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  return [hours, minutes, remainingSeconds].map((value) => value.toString().padStart(2, '0')).join(':');
+}
+
+function linkStatusLabel(link: LiveContactLink) {
+  if (link.status === 'IN_CONTACT') return `LOS까지 ${formatCountdown(link.countdownSeconds)}`;
+  if (link.status === 'BEFORE_AOS') return `AOS까지 ${formatCountdown(link.countdownSeconds)}`;
+  return '가시권 밖';
+}
+
+function cdmSeverity(item: ConjunctionRecord) {
+  return classifyConjunctionSeverity(item);
+}
+
+function cdmSeverityLabel(item: ConjunctionRecord) {
+  const severity = cdmSeverity(item);
+  if (severity === 'critical') return '심각한 위협';
+  if (severity === 'warn') return '근접 경고';
+  return '감시';
+}
+
+function catalogNumberFromSatelliteId(id: string) {
+  const match = /^catalog:(\d+)$/.exec(id);
+  if (!match) return null;
+  const catalogNumber = Number(match[1]);
+  return Number.isFinite(catalogNumber) ? catalogNumber : null;
+}
+
+function cloneFleetMemberRef(refItem: FleetMemberRef): FleetMemberRef {
+  return {
+    refType: refItem.refType,
+    catalogNumber: refItem.catalogNumber,
+    customTleId: refItem.customTleId,
+    displayName: refItem.displayName,
+    tags: [...refItem.tags],
+  };
+}
+
+function updateStationMask(station: GroundStation, value: string) {
+  const elevationMaskDeg = Number(value);
+  if (!Number.isFinite(elevationMaskDeg)) return;
+  void store.upsertGroundStation({ ...station, elevationMaskDeg: Math.min(Math.max(elevationMaskDeg, 0), 90) });
+}
+
+function toggleFocusedStation(station: GroundStation, enabled: boolean) {
+  void store.toggleGroundStation(station.id, enabled);
 }
 
 function refKey(member: FleetMemberRef) {
@@ -346,23 +469,137 @@ function refKey(member: FleetMemberRef) {
           <OrbitMap2D
             v-if="renderMode === '2d'"
             :satellites="visibleFleetEntries"
+            :contact-links="contactLinks"
+            :focused-target="focusedTarget"
             :ground-stations="store.groundStations"
             :live-playback-rate="livePlaybackRate"
             :orbit-mode="orbitMode"
             :orbit-time-iso="displayedOrbitTimeIso"
             :data-saver="store.preferences.dataSaver"
+            @focus-target="setFocusedTarget"
           />
           <OrbitGlobe3D
             v-else
             :satellites="visibleFleetEntries"
+            :contact-links="contactLinks"
+            :focused-target="focusedTarget"
             :ground-stations="store.groundStations"
             :orbit-time-iso="displayedOrbitTimeIso"
             :orbit-mode="orbitMode"
             :data-saver="store.preferences.dataSaver"
+            @focus-target="setFocusedTarget"
           />
         </div>
 
         <aside class="war-room__side">
+          <section class="war-room__side-card focus-inspector">
+            <div class="war-room__side-header">
+              <p class="eyebrow">Focus Inspector</p>
+              <button v-if="focusedTarget" class="button button--ghost panel-card__action-link" type="button" @click="clearFocusedTarget()">Clear</button>
+            </div>
+
+            <template v-if="focusedSatellite">
+              <div class="focus-inspector__hero">
+                <strong>{{ focusedSatellite.member.displayName ?? focusedSatellite.entry.satcat.objectName }}</strong>
+                <p>NORAD {{ focusedSatellite.entry.satcat.catalogNumber }} · {{ focusedSatellite.entry.group }}</p>
+              </div>
+              <div class="focus-inspector__actions">
+                <button class="button button--ghost" type="button" @click="store.toggleFleetMemberHidden(focusedSatellite.member)">
+                  {{ store.isFleetMemberHidden(focusedSatellite.member) ? '표시' : '숨기기' }}
+                </button>
+                <button class="button button--ghost" type="button" @click="store.removeFleetMember(focusedSatellite.member)">플릿에서 제거</button>
+              </div>
+            </template>
+
+            <template v-else-if="focusedStation">
+              <div class="focus-inspector__hero">
+                <strong>{{ focusedStation.name }}</strong>
+                <p>{{ focusedStation.latDeg.toFixed(4) }}, {{ focusedStation.lonDeg.toFixed(4) }}</p>
+              </div>
+              <div class="focus-inspector__station-controls">
+                <label class="setting-toggle setting-toggle--compact">
+                  <span>활성</span>
+                  <input
+                    :checked="focusedStation.enabled"
+                    type="checkbox"
+                    @change="toggleFocusedStation(focusedStation, ($event.target as HTMLInputElement).checked)"
+                  />
+                </label>
+                <label>
+                  <span>Elevation mask</span>
+                  <input
+                    class="input"
+                    type="number"
+                    min="0"
+                    max="90"
+                    step="1"
+                    :value="focusedStation.elevationMaskDeg"
+                    @change="updateStationMask(focusedStation, ($event.target as HTMLInputElement).value)"
+                  />
+                </label>
+              </div>
+            </template>
+
+            <template v-else>
+              <div class="focus-inspector__hero">
+                <strong>{{ contactLinks.filter((link) => link.status === 'IN_CONTACT').length }} active links</strong>
+                <p>{{ store.groundStations.filter((station) => station.enabled).length }} enabled ground stations</p>
+              </div>
+            </template>
+
+            <div class="focus-inspector__section">
+              <div class="focus-inspector__section-heading">
+                <span>Ground Stations</span>
+                <small>{{ enabledGroundStationCount }}/{{ store.groundStations.length }} selected</small>
+              </div>
+              <div class="focus-inspector__station-list">
+                <article
+                  v-for="station in store.groundStations"
+                  :key="station.id"
+                  class="focus-inspector__station-toggle"
+                  :class="{ 'focus-inspector__station-toggle--active': station.enabled }"
+                >
+                  <label>
+                    <input
+                      :checked="station.enabled"
+                      type="checkbox"
+                      @change="toggleFocusedStation(station, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span>
+                      <strong>{{ station.name }}</strong>
+                      <small>{{ station.elevationMaskDeg }}° mask</small>
+                    </span>
+                  </label>
+                  <button class="button button--ghost panel-card__action-link" type="button" @click="setFocusedTarget({ type: 'groundStation', id: station.id })">
+                    보기
+                  </button>
+                </article>
+              </div>
+            </div>
+
+            <div class="focus-inspector__section">
+              <span>Contact Windows</span>
+              <article v-for="link in focusedLinks" :key="`${link.satelliteId}-${link.groundStationId}`" class="focus-inspector__row" :class="`focus-inspector__row--${link.status.toLowerCase().replace('_', '-')}`">
+                <div>
+                  <strong>{{ link.satelliteName }} → {{ link.groundStationName }}</strong>
+                  <p>{{ linkStatusLabel(link) }} · el {{ link.elevationDeg.toFixed(1) }}° · az {{ link.azimuthDeg.toFixed(0) }}°</p>
+                </div>
+              </article>
+              <p v-if="!focusedLinks.length" class="empty-state">가시권 링크가 없습니다.</p>
+            </div>
+
+            <div class="focus-inspector__section">
+              <span>CDM</span>
+              <article v-for="item in focusedConjunctions" :key="item.id" class="focus-inspector__row" :class="`focus-inspector__row--${cdmSeverity(item)}`">
+                <div>
+                  <strong>{{ cdmSeverityLabel(item) }} · {{ item.missDistanceKm.toFixed(2) }} km</strong>
+                  <p>{{ item.primary.name }} × {{ item.secondary.name }} · {{ formatRelative(item.tca) }}</p>
+                </div>
+              </article>
+              <p v-if="!focusedConjunctions.length" class="empty-state">근접경고 없음</p>
+            </div>
+          </section>
+
           <section class="war-room__side-card">
             <div class="war-room__side-header">
               <p class="eyebrow">Live Intel Queue</p>
@@ -455,9 +692,9 @@ function refKey(member: FleetMemberRef) {
         <OriginBadge v-if="store.filteredConjunctions[0]?.fetchedAt" origin="OSINT" :timestamp="store.filteredConjunctions[0].fetchedAt" :stale="store.offline" />
       </template>
       <div class="stack-list">
-        <article v-for="item in store.filteredConjunctions.slice(0, 3)" :key="item.id" class="stack-list__item">
+        <article v-for="item in store.filteredConjunctions.slice(0, 3)" :key="item.id" class="stack-list__item" :class="`stack-list__item--${cdmSeverity(item)}`">
           <div>
-            <strong>{{ item.primary.name }} × {{ item.secondary.name }}</strong>
+            <strong>{{ cdmSeverityLabel(item) }} · {{ item.primary.name }} × {{ item.secondary.name }}</strong>
             <p>{{ item.missDistanceKm.toFixed(1) }} km miss · {{ item.relVelocityKmS.toFixed(1) }} km/s</p>
           </div>
           <small>{{ formatRelative(item.tca) }}</small>
