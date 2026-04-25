@@ -94,7 +94,7 @@ async function toggleTracking(entry: CatalogEntry) {
 </script>
 
 <template>
-  <div class="page-stack">
+  <div class="page-stack catalog-layout">
     <PanelCard title="Catalog Browser" subtitle="F-MUST-01">
       <template #actions>
         <OriginBadge origin="OSINT" :timestamp="store.catalog[0]?.fetchedAt" />

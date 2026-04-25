@@ -735,7 +735,7 @@ textarea:focus-visible {
 
 .war-room__toolbar .simulation-controls__buttons {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(10, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -746,9 +746,9 @@ textarea:focus-visible {
 
 .war-room__toolbar .simulation-controls__buttons .button,
 .war-room__toolbar .simulation-controls__rates .button {
-  min-height: 34px;
-  padding: 7px 10px;
-  font-size: 0.84rem;
+  min-height: 32px;
+  padding: 6px 8px;
+  font-size: 0.78rem;
 }
 
 .war-room__toolbar .simulation-controls__picker .input {
@@ -758,7 +758,7 @@ textarea:focus-visible {
 
 .war-room__toolbar .simulation-controls__picker .button {
   min-height: 40px;
-  padding: 9px 16px;
+  padding: 9px 14px;
 }
 
 .war-room .orbit-map {
@@ -1252,6 +1252,17 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
+.button.panel-card__action-link,
+.panel-card__actions .button,
+.inline-actions .button,
+.catalog-table__row .button,
+.table-like__row .button,
+.fleet-log-list .button {
+  min-height: 36px;
+  padding: 7px 13px;
+  font-size: 0.84rem;
+}
+
 .briefing-grid {
   display: grid;
   gap: var(--grid-gap);
@@ -1493,10 +1504,11 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 44px;
+  min-height: 40px;
   border-radius: 999px;
-  padding: 11px 22px;
+  padding: 9px 18px;
   font-weight: 600;
+  font-size: 0.94rem;
   letter-spacing: 0.02em;
   transition:
     background 180ms ease,
@@ -1521,7 +1533,8 @@ textarea:focus-visible {
 }
 
 .icon-button {
-  width: 44px;
+  width: 42px;
+  min-height: 42px;
   padding: 0;
 }
 
@@ -1532,7 +1545,7 @@ textarea:focus-visible {
   border-color: var(--surface);
   color: var(--surface);
   box-shadow: 0 0 0 2px var(--accent);
-  transform: scale(1.12);
+  transform: translateY(-1px);
 }
 
 .button:active,
@@ -1956,8 +1969,8 @@ textarea:focus-visible {
 .orbit-map__nav {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px;
+  gap: 4px;
+  padding: 5px;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.62);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -1967,8 +1980,8 @@ textarea:focus-visible {
 .orbit-map__nav button,
 .orbit-map__nav span {
   display: inline-grid;
-  min-width: 34px;
-  height: 34px;
+  min-width: 30px;
+  height: 30px;
   place-items: center;
   border-radius: 999px;
 }
@@ -1986,21 +1999,21 @@ textarea:focus-visible {
 .orbit-map__nav button:hover {
   background: var(--accent-alt);
   box-shadow: 0 0 0 2px var(--accent);
-  transform: scale(1.08);
+  transform: translateY(-1px);
 }
 
 .orbit-map__nav span {
-  min-width: 56px;
+  min-width: 48px;
   color: #53b1ff;
-  font-size: 0.8rem;
+  font-size: 0.74rem;
   font-weight: 700;
 }
 
 .orbit-map__clock {
   display: grid;
   justify-items: end;
-  gap: 4px;
-  padding: 12px 14px;
+  gap: 3px;
+  padding: 9px 11px;
   border-radius: var(--radius-lg);
   background: rgba(0, 0, 0, 0.62);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -2292,12 +2305,12 @@ textarea:focus-visible {
   z-index: 60;
   left: max(10px, env(safe-area-inset-left));
   right: max(10px, env(safe-area-inset-right));
-  bottom: calc(8px + env(safe-area-inset-bottom));
+  bottom: calc(6px + env(safe-area-inset-bottom));
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 4px;
-  padding: 5px;
-  border-radius: 22px;
+  gap: 3px;
+  padding: 4px;
+  border-radius: 20px;
   background: #020409;
   border: 1px solid rgba(255, 255, 255, 0.18);
   box-shadow: 0 18px 52px rgba(0, 0, 0, 0.58);
@@ -2320,9 +2333,9 @@ textarea:focus-visible {
   place-items: center;
   gap: 4px;
   min-width: 0;
-  min-height: 42px;
-  padding: 6px 4px;
-  border-radius: 16px;
+  min-height: 38px;
+  padding: 5px 4px;
+  border-radius: 15px;
   color: rgba(255, 255, 255, 0.62);
   text-align: center;
   font-size: 0.68rem;
@@ -2743,7 +2756,7 @@ textarea:focus-visible {
 @media (max-width: 767px) {
   .page-shell {
     padding: 14px;
-    padding-bottom: calc(82px + env(safe-area-inset-bottom));
+    padding-bottom: calc(108px + env(safe-area-inset-bottom));
   }
 
   .topbar {
@@ -2771,7 +2784,7 @@ textarea:focus-visible {
   }
 
   .war-room {
-    gap: 14px;
+    gap: 16px;
     padding: 12px;
     border-radius: 24px;
   }
@@ -2790,8 +2803,8 @@ textarea:focus-visible {
 
   .war-room__map-panel {
     grid-template-rows: auto auto auto minmax(0, 1fr);
-    gap: 8px;
-    min-height: min(82svh, 760px);
+    gap: 10px;
+    min-height: min(76svh, 700px);
     padding: 8px;
     border-radius: 22px;
   }
@@ -2802,7 +2815,7 @@ textarea:focus-visible {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
+    gap: 8px;
     min-width: 0;
     padding: 8px;
     border-radius: 18px;
@@ -2837,7 +2850,7 @@ textarea:focus-visible {
   }
 
   .war-room .orbit-map {
-    min-height: min(72svh, 680px);
+    min-height: min(58svh, 560px);
   }
 
   .war-room__map-panel--controls-open .orbit-map {
@@ -2902,14 +2915,14 @@ textarea:focus-visible {
   }
 
   .orbit-map__top-actions {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: flex-end;
     gap: 6px;
     min-width: 0;
   }
 
   .orbit-map__nav {
-    order: 2;
+    order: 0;
     gap: 4px;
     padding: 5px;
   }
@@ -2926,14 +2939,7 @@ textarea:focus-visible {
   }
 
   .orbit-map__clock {
-    gap: 3px;
-    padding: 8px 10px;
-    border-radius: 16px;
-  }
-
-  .orbit-map__clock span,
-  .orbit-map__clock small {
-    font-size: 0.68rem;
+    display: none;
   }
 
   .orbit-map__hud--bottom > div {
@@ -3000,6 +3006,31 @@ textarea:focus-visible {
   .war-room__toolbar .simulation-controls__picker .input,
   .war-room__toolbar .simulation-controls__picker .button {
     min-height: 34px;
+  }
+
+  .catalog-layout .panel-card__actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .catalog-layout .origin-badge--with-time {
+    inline-size: min(11rem, 100%);
+  }
+
+  .loading-state--inline {
+    gap: 12px;
+    padding: 16px;
+  }
+
+  .loading-state--inline .loading-state__content strong {
+    font-size: clamp(1.18rem, 7vw, 1.55rem);
+  }
+
+  .loading-state--inline .loading-state__spinner {
+    width: 34px;
+    height: 34px;
+    border-width: 3px;
   }
 
   .event-timeline__item,
