@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { nextTick } from 'vue';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import type { CatalogEntry, GroundStation, LiveContactLink } from '@/domain/types';
 import OrbitMap2D from './OrbitMap2D.vue';
@@ -47,6 +48,10 @@ const contactLink: LiveContactLink = {
 };
 
 describe('OrbitMap2D', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('updates the night mask when orbit time changes', async () => {
     const wrapper = mount(OrbitMap2D, {
       props: {
@@ -128,6 +133,7 @@ describe('OrbitMap2D', () => {
   });
 
   it('centers focused ground stations and keeps horizontal panning unbounded', async () => {
+    vi.useFakeTimers();
     const wrapper = mount(OrbitMap2D, {
       props: {
         satellites: [satelliteEntry],
@@ -143,6 +149,12 @@ describe('OrbitMap2D', () => {
     await wrapper.setProps({ focusedTarget: { type: 'groundStation', id: station.id } });
 
     const stationPoint = projectMapPoint(station.lonDeg, station.latDeg);
+    const immediateViewBox = parseViewBox(wrapper.find('svg').attributes('viewBox') ?? '');
+    expect(immediateViewBox.x + immediateViewBox.width / 2).not.toBeCloseTo(stationPoint.x, 1);
+
+    await vi.advanceTimersByTimeAsync(700);
+    await nextTick();
+
     const focusedViewBox = parseViewBox(wrapper.find('svg').attributes('viewBox') ?? '');
     expect(focusedViewBox.x + focusedViewBox.width / 2).toBeCloseTo(stationPoint.x, 1);
     expect(focusedViewBox.y + focusedViewBox.height / 2).toBeCloseTo(stationPoint.y, 1);

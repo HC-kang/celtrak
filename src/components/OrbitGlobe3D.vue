@@ -29,6 +29,7 @@ const DEFAULT_CAMERA_DISTANCE = 5.45;
 const INITIAL_EARTH_ROTATION = { x: -0.2, y: -0.52, z: 0.02 };
 const FOCUS_TARGET_Y_RATIO = 0.08;
 const ROTATION_X_LIMIT = Math.PI / 2 + Math.atan(FOCUS_TARGET_Y_RATIO) + 0.04;
+const FOCUS_ROTATION_ANIMATION_MS = 680;
 type GeoPoint = [number, number];
 type GeoPolygon = GeoPoint[];
 interface PointerSnapshot {
@@ -38,6 +39,12 @@ interface PointerSnapshot {
 
 interface GlobePinchState {
   lastDistance: number;
+}
+
+interface FocusRotationTween {
+  from: typeof INITIAL_EARTH_ROTATION;
+  to: typeof INITIAL_EARTH_ROTATION;
+  startedAt: number;
 }
 
 let renderer: THREE.WebGLRenderer | null = null;
@@ -54,6 +61,7 @@ let timer: number | null = null;
 let currentCameraDistance = DEFAULT_CAMERA_DISTANCE;
 let targetCameraDistance = DEFAULT_CAMERA_DISTANCE;
 let globeRotation = { ...INITIAL_EARTH_ROTATION };
+let focusRotationTween: FocusRotationTween | null = null;
 let pointerStart: { x: number; y: number; rotationX: number; rotationY: number } | null = null;
 let pointerDownSnapshot: PointerSnapshot | null = null;
 let pinchState: GlobePinchState | null = null;
@@ -988,6 +996,7 @@ function handlePointerDown(event: PointerEvent) {
   if (!earthRig || !renderer) return;
   if (event.pointerType === 'mouse' && event.button !== 0) return;
   event.preventDefault();
+  cancelGlobeFocusAnimation();
   pointerDownSnapshot = { x: event.clientX, y: event.clientY };
   activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
   renderer.domElement.setPointerCapture(event.pointerId);
@@ -1061,10 +1070,12 @@ function handleWheel(event: WheelEvent) {
 }
 
 function toggleAutoRotate() {
+  cancelGlobeFocusAnimation();
   autoRotate.value = !autoRotate.value;
 }
 
 function resetGlobeRotation() {
+  cancelGlobeFocusAnimation();
   setGlobeRotation({ ...INITIAL_EARTH_ROTATION });
   autoRotate.value = false;
   isInteracting.value = false;
@@ -1116,7 +1127,7 @@ function focusGlobeOnTarget(target: MapFocusTarget | null | undefined) {
   const targetVector = target.type === 'satellite' ? findSatelliteVector(target.id) : findStationVector(target.id);
   if (!targetVector) return;
 
-  setGlobeRotation(rotationForFocusTarget(targetVector));
+  animateGlobeRotationTo(rotationForFocusTarget(targetVector));
   autoRotate.value = false;
   isInteracting.value = false;
   pointerStart = null;
@@ -1150,6 +1161,43 @@ function applyGlobeRotation() {
   earthRig?.rotation.set(globeRotation.x, globeRotation.y, globeRotation.z);
 }
 
+function animateGlobeRotationTo(targetRotation: typeof INITIAL_EARTH_ROTATION) {
+  cancelGlobeFocusAnimation();
+  if (prefersReducedMotion()) {
+    setGlobeRotation(targetRotation);
+    return;
+  }
+  focusRotationTween = {
+    from: { ...globeRotation },
+    to: {
+      x: THREE.MathUtils.clamp(targetRotation.x, -ROTATION_X_LIMIT, ROTATION_X_LIMIT),
+      y: targetRotation.y,
+      z: targetRotation.z,
+    },
+    startedAt: performance.now(),
+  };
+}
+
+function updateGlobeFocusAnimation(timestamp: number) {
+  if (!focusRotationTween) return;
+  const progress = THREE.MathUtils.clamp((timestamp - focusRotationTween.startedAt) / FOCUS_ROTATION_ANIMATION_MS, 0, 1);
+  const eased = easeOutCubic(progress);
+  setGlobeRotation({
+    x: THREE.MathUtils.lerp(focusRotationTween.from.x, focusRotationTween.to.x, eased),
+    y: THREE.MathUtils.lerp(focusRotationTween.from.y, focusRotationTween.to.y, eased),
+    z: THREE.MathUtils.lerp(focusRotationTween.from.z, focusRotationTween.to.z, eased),
+  });
+
+  if (progress >= 1) {
+    setGlobeRotation(focusRotationTween.to);
+    focusRotationTween = null;
+  }
+}
+
+function cancelGlobeFocusAnimation() {
+  focusRotationTween = null;
+}
+
 function findSatelliteVector(id: string) {
   const catalogNumber = Number(id.replace('catalog:', ''));
   if (!Number.isFinite(catalogNumber)) return null;
@@ -1174,9 +1222,10 @@ function findFocusTarget(object: THREE.Object3D | null): MapFocusTarget | null {
   return null;
 }
 
-function animate() {
+function animate(timestamp = performance.now()) {
   if (!renderer || !scene || !camera) return;
   frameHandle = requestAnimationFrame(animate);
+  updateGlobeFocusAnimation(timestamp);
 
   if (earthRig && autoRotate.value && !isInteracting.value) {
     setGlobeRotation({ y: globeRotation.y + (props.dataSaver ? 0.00055 : 0.0009) });
@@ -1283,6 +1332,14 @@ function targetMatches(left: MapFocusTarget | null | undefined, right: MapFocusT
 
 function radiansToDegrees(value: number) {
   return (value * 180) / Math.PI;
+}
+
+function easeOutCubic(value: number) {
+  return 1 - (1 - value) ** 3;
+}
+
+function prefersReducedMotion() {
+  return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 }
 
 onMounted(() => {

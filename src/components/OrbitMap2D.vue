@@ -27,6 +27,7 @@ const MAP_HEIGHT = MAP_WIDTH;
 const MAX_ZOOM = 8;
 const TRAIL_START_MINUTES = -45;
 const TRAIL_END_MINUTES = 120;
+const FOCUS_ANIMATION_MS = 560;
 const TRACK_COLORS = ['#0070cc', '#1eaedb', '#53b1ff', '#ffffff', '#d53b00', '#1883fd'];
 type SatRec = ReturnType<typeof satellite.twoline2satrec>;
 
@@ -41,6 +42,7 @@ let resizeObserver: ResizeObserver | null = null;
 let dragState: DragState | null = null;
 let pinchState: PinchState | null = null;
 let pointerDownSnapshot: PointerDownSnapshot | null = null;
+let focusAnimationFrame = 0;
 const activePointers = new Map<number, PointerSnapshot>();
 
 onMounted(() => {
@@ -62,6 +64,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  cancelFocusAnimation();
   resizeObserver?.disconnect();
 });
 
@@ -234,14 +237,17 @@ function radiansToDegrees(value: number) {
 }
 
 function zoomIn() {
+  cancelFocusAnimation();
   setZoom(zoom.value * 1.28);
 }
 
 function zoomOut() {
+  cancelFocusAnimation();
   setZoom(zoom.value / 1.28);
 }
 
 function resetMapView() {
+  cancelFocusAnimation();
   userMovedMap.value = false;
   zoom.value = coverZoom.value;
   center.value = { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 };
@@ -249,6 +255,7 @@ function resetMapView() {
 
 function onWheel(event: WheelEvent) {
   event.preventDefault();
+  cancelFocusAnimation();
   userMovedMap.value = true;
   if (event.shiftKey || event.altKey) {
     const view = currentView.value;
@@ -266,6 +273,7 @@ function onWheel(event: WheelEvent) {
 function onPointerDown(event: PointerEvent) {
   if (event.pointerType === 'mouse' && event.button !== 0) return;
   event.preventDefault();
+  cancelFocusAnimation();
   userMovedMap.value = true;
   activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
   pointerDownSnapshot =
@@ -635,9 +643,56 @@ function centerMapOnTarget(target: MapFocusTarget | null | undefined) {
 
   const targetZoom = Math.max(zoom.value, Math.min(MAX_ZOOM, Math.max(coverZoom.value, 1.85)));
   const targetX = nearestWrappedX(point.x, center.value.x);
-  zoom.value = targetZoom;
-  center.value = clampCenter(targetX, point.y, targetZoom);
+  animateMapFocus(clampCenter(targetX, point.y, targetZoom), targetZoom);
   userMovedMap.value = true;
+}
+
+function animateMapFocus(targetCenter: MapPoint, targetZoom: number) {
+  cancelFocusAnimation();
+  if (prefersReducedMotion()) {
+    zoom.value = targetZoom;
+    center.value = targetCenter;
+    return;
+  }
+
+  const startTime = performance.now();
+  const startCenter = { ...center.value };
+  const startZoom = zoom.value;
+
+  const step = (timestamp: number) => {
+    const progress = clamp((timestamp - startTime) / FOCUS_ANIMATION_MS, 0, 1);
+    const eased = easeOutCubic(progress);
+    zoom.value = lerp(startZoom, targetZoom, eased);
+    center.value = clampCenter(lerp(startCenter.x, targetCenter.x, eased), lerp(startCenter.y, targetCenter.y, eased), zoom.value);
+
+    if (progress < 1) {
+      focusAnimationFrame = requestAnimationFrame(step);
+      return;
+    }
+    focusAnimationFrame = 0;
+    zoom.value = targetZoom;
+    center.value = targetCenter;
+  };
+
+  focusAnimationFrame = requestAnimationFrame(step);
+}
+
+function cancelFocusAnimation() {
+  if (!focusAnimationFrame) return;
+  cancelAnimationFrame(focusAnimationFrame);
+  focusAnimationFrame = 0;
+}
+
+function easeOutCubic(value: number) {
+  return 1 - (1 - value) ** 3;
+}
+
+function lerp(start: number, end: number, amount: number) {
+  return start + (end - start) * amount;
+}
+
+function prefersReducedMotion() {
+  return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 }
 
 function findSatellitePoint(id: string) {
