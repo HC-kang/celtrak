@@ -171,6 +171,7 @@ const focusedStation = computed(() => {
 
 const enabledGroundStationCount = computed(() => store.groundStations.filter((station) => station.enabled).length);
 const visibleTrackedObjectCount = computed(() => trackedObjects.value.filter((item) => !item.hidden).length);
+const hiddenTrackedObjectCount = computed(() => trackedObjects.value.length - visibleTrackedObjectCount.value);
 const cdmQueryCatalogNumbers = computed(() => {
   if (cdmScope.value === 'all') return [];
   if (cdmScope.value === 'focused') return focusedCatalogNumber.value ? [focusedCatalogNumber.value] : [];
@@ -723,6 +724,13 @@ function setAllGroundStations(enabled: boolean) {
   );
 }
 
+function setAllTrackedObjectsVisible(visible: boolean) {
+  const hidden = !visible;
+  const refs = trackedObjects.value.filter((item) => item.hidden !== hidden).map((item) => item.ref);
+  if (!refs.length) return;
+  store.setFleetMembersHidden(refs, hidden);
+}
+
 function refKey(member: FleetMemberRef) {
   return member.refType === 'catalog' ? `catalog:${member.catalogNumber}` : `custom:${member.customTleId}`;
 }
@@ -1267,6 +1275,22 @@ watch(
 
             <div v-else class="tracking-scope__panel">
               <div class="ground-station-control__actions">
+                <button
+                  class="button button--ghost panel-card__action-link"
+                  type="button"
+                  :disabled="hiddenTrackedObjectCount === 0"
+                  @click="setAllTrackedObjectsVisible(true)"
+                >
+                  전체 보이기
+                </button>
+                <button
+                  class="button button--ghost panel-card__action-link"
+                  type="button"
+                  :disabled="visibleTrackedObjectCount === 0"
+                  @click="setAllTrackedObjectsVisible(false)"
+                >
+                  전체 숨기기
+                </button>
                 <RouterLink class="button button--ghost panel-card__action-link" to="/catalog">Catalog에서 추가</RouterLink>
                 <RouterLink class="button button--ghost panel-card__action-link" to="/fleets">Fleet 관리</RouterLink>
               </div>
