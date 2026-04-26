@@ -10,25 +10,32 @@ const route = useRoute();
 const viewport = useViewport();
 const store = useAppStore();
 
+const SIDEBAR_COLLAPSED_KEY = 'celtrak:sidebar-collapsed';
+
 const drawerOpen = ref(false);
+const sidebarCollapsed = ref(false);
 const bottomTabsHidden = ref(false);
 const lastScrollY = ref(0);
 let scrollFrame: number | null = null;
 
 const navItems = [
-  { label: 'Briefing', shortLabel: 'Brief', path: '/briefing' },
-  { label: 'Catalog', shortLabel: 'Catalog', path: '/catalog' },
-  { label: 'Fleets', shortLabel: 'Fleets', path: '/fleets' },
-  { label: 'Ground Stations', shortLabel: 'Ground', path: '/stations' },
-  { label: 'Space Weather', shortLabel: 'Weather', path: '/weather' },
+  { label: 'Briefing', shortLabel: 'Brief', marker: 'B', path: '/briefing' },
+  { label: 'Catalog', shortLabel: 'Catalog', marker: 'C', path: '/catalog' },
+  { label: 'Fleets', shortLabel: 'Fleets', marker: 'F', path: '/fleets' },
+  { label: 'Ground Stations', shortLabel: 'Ground', marker: 'G', path: '/stations' },
+  { label: 'Space Weather', shortLabel: 'Weather', marker: 'W', path: '/weather' },
 ];
 
 const isMobileTabs = computed(() => viewport.breakpoint.value === 'xs' || viewport.breakpoint.value === 'sm');
 const usesSidebar = computed(() => viewport.breakpoint.value === 'lg' || viewport.breakpoint.value === 'xl');
-const shellClass = computed(() => `app-shell--${viewport.breakpoint.value}`);
+const shellClass = computed(() => [
+  `app-shell--${viewport.breakpoint.value}`,
+  { 'app-shell--sidebar-collapsed': usesSidebar.value && sidebarCollapsed.value },
+]);
 const isInitialLoading = computed(() => store.loading && !store.lastSyncedAt);
 
 onMounted(() => {
+  sidebarCollapsed.value = readSavedSidebarState();
   lastScrollY.value = currentScrollY();
   window.addEventListener('scroll', handleScroll, { passive: true });
 });
@@ -54,6 +61,26 @@ watch(drawerOpen, (open) => {
     bottomTabsHidden.value = false;
   }
 });
+
+watch(sidebarCollapsed, (collapsed) => {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? 'true' : 'false');
+  } catch {
+    // The sidebar remains functional even when localStorage is unavailable.
+  }
+});
+
+function readSavedSidebarState() {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value;
+}
 
 function currentScrollY() {
   return window.scrollY || document.documentElement.scrollTop || 0;
@@ -85,14 +112,32 @@ function updateBottomTabsVisibility() {
 
 <template>
   <div class="app-shell" :class="shellClass">
-    <aside v-if="usesSidebar" class="app-shell__sidebar">
+    <aside v-if="usesSidebar" class="app-shell__sidebar" :class="{ 'app-shell__sidebar--collapsed': sidebarCollapsed }">
+      <button
+        type="button"
+        class="sidebar-toggle"
+        :aria-label="sidebarCollapsed ? '사이드바 펼치기' : '사이드바 접기'"
+        :aria-expanded="!sidebarCollapsed"
+        @click="toggleSidebar"
+      >
+        <span aria-hidden="true">{{ sidebarCollapsed ? '›' : '‹' }}</span>
+      </button>
       <div class="brand">
         <p>Orbit Lab</p>
         <strong>CelesTrak Pro</strong>
       </div>
       <nav class="nav-list">
-        <RouterLink v-for="item in navItems" :key="item.path" :to="item.path" class="nav-link">
-          {{ item.label }}
+        <RouterLink
+          v-for="item in navItems"
+          :key="item.path"
+          :to="item.path"
+          class="nav-link"
+          :aria-label="item.label"
+          :data-label="item.label"
+          :title="sidebarCollapsed ? item.label : undefined"
+        >
+          <span class="nav-link__marker" aria-hidden="true">{{ item.marker }}</span>
+          <span class="nav-link__text">{{ item.label }}</span>
         </RouterLink>
       </nav>
       <div class="sidebar-footnote">
