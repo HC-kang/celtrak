@@ -280,7 +280,7 @@ export const useAppStore = defineStore('app', () => {
       return addCatalogToFleet(existing, fleetId);
     }
     const [entry] = await gateway.getCatalogStrict({ catalogNumbers: [catalogNumber] }, { timeoutMs: 15_000 });
-    if (!entry) throw new Error(`NORAD ${catalogNumber} catalog lookup returned no rows`);
+    if (!entry) throw new Error(`CelesTrak에서 NORAD ${catalogNumber}의 TLE/SATCAT을 찾지 못했습니다.`);
     return addCatalogToFleet(entry, fleetId);
   }
 

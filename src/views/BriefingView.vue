@@ -427,7 +427,12 @@ function groundStationFocusTarget(id: string): MapFocusTarget {
 }
 
 function conjunctionObjectTarget(item: ConjunctionRecord['primary']) {
-  return item.catalogNumber ? satelliteFocusTarget(`catalog:${item.catalogNumber}`) : null;
+  return isResolvableConjunctionObject(item) ? satelliteFocusTarget(`catalog:${item.catalogNumber}`) : null;
+}
+
+function isResolvableConjunctionObject(item: ConjunctionRecord['primary']): item is ConjunctionRecord['primary'] & { catalogNumber: number } {
+  const name = item.name.trim().toUpperCase();
+  return Boolean(item.catalogNumber && name && name !== 'UNKNOWN');
 }
 
 function isConjunctionObjectTracked(item: ConjunctionRecord['primary']) {
@@ -445,7 +450,7 @@ function conjunctionChipClasses(item: ConjunctionRecord['primary']) {
     'focus-inspector__chip--active': tracked && focusTargetMatches(focusedTarget.value, target),
     'focus-inspector__chip--preview':
       tracked && focusTargetMatches(hoveredTarget.value, target) && !focusTargetMatches(focusedTarget.value, target),
-    'focus-inspector__chip--addable': Boolean(item.catalogNumber && !tracked),
+    'focus-inspector__chip--addable': Boolean(target && !tracked),
     'focus-inspector__chip--loading': isAddingConjunctionObject(item),
   };
 }
@@ -478,7 +483,7 @@ async function activateConjunctionObject(item: ConjunctionRecord['primary']) {
         name: item.name,
         state: 'error',
         message: `${item.name} 추적 추가에 실패했습니다.`,
-        detail: error instanceof Error ? error.message : 'catalog/TLE 조회 중 알 수 없는 오류가 발생했습니다.',
+        detail: cdmAddErrorDetail(error, item.catalogNumber),
       });
       return;
     } finally {
@@ -508,6 +513,18 @@ function cdmFeedbackStateLabel(state: CdmFeedbackToast['state']) {
   if (state === 'success') return '성공';
   if (state === 'error') return '실패';
   return '요청';
+}
+
+function cdmAddErrorDetail(error: unknown, catalogNumber: number) {
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('TLE/SATCAT을 찾지 못했습니다')) return message;
+  if (message.includes('timed out')) {
+    return `CelesTrak 응답 지연으로 NORAD ${catalogNumber} 조회가 중단됐습니다. 잠시 후 재시도하세요.`;
+  }
+  if (message.includes('returned 502') || message.includes('API upstream failed')) {
+    return `CelesTrak upstream 조회가 실패했습니다. 잠시 후 재시도하세요.`;
+  }
+  return message || 'catalog/TLE 조회 중 알 수 없는 오류가 발생했습니다.';
 }
 
 function showCdmFeedback(input: Omit<CdmFeedbackToast, 'id'>) {

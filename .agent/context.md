@@ -97,3 +97,4 @@
 
 - 2026-04-26: CDM untracked-object add needs explicit async feedback. Show a small Focus Inspector toast immediately on request, replace it with success/error, and keep retry on error. For Worker CATNR lookup, do not wait on slow SATCAT enrichment once TLE is available; use shorter CATNR-specific upstream timeouts and bump cache version when changing this behavior.
 - 2026-04-26: CDM add feedback should be a viewport-level top-right toast layer, not embedded inside Focus Inspector. Users can miss inline Inspector feedback while scanning the map; use state-colored Grafana-like toasts for requested/success/failed outcomes.
+- 2026-04-26: CDM CATNR add failures can be caused by CelesTrak connection throttling, not necessarily missing objects. Keep Worker CATNR lookup TLE-first to avoid opening simultaneous TLE+SATCAT connections, include response-body reads in upstream timeouts, return empty rows for true no-data, and keep obvious `UNKNOWN` CDM objects non-clickable.

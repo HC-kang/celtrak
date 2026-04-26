@@ -35,8 +35,13 @@ async function fetchJson<T>(input: string, options: { timeoutMs?: number } = {})
   const timer = window.setTimeout(() => controller.abort(), options.timeoutMs ?? 20_000);
   try {
     const response = await fetch(input, { signal: controller.signal });
-    if (!response.ok) throw new Error(`${input} returned ${response.status}`);
-    return (await response.json()) as T;
+    const text = await response.text();
+    const data = text ? parseJsonBody<unknown>(input, text) : null;
+    if (!response.ok) {
+      const detail = responseErrorDetail(data);
+      throw new Error(detail ? `${input} returned ${response.status}: ${detail}` : `${input} returned ${response.status}`);
+    }
+    return data as T;
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new Error(`${input} timed out`);
@@ -45,6 +50,22 @@ async function fetchJson<T>(input: string, options: { timeoutMs?: number } = {})
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+function parseJsonBody<T>(input: string, text: string): T {
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    throw new Error(`${input} returned invalid JSON`, { cause: error });
+  }
+}
+
+function responseErrorDetail(data: unknown) {
+  if (!data || typeof data !== 'object') return '';
+  const record = data as Record<string, unknown>;
+  const detail = typeof record.detail === 'string' ? record.detail : '';
+  const error = typeof record.error === 'string' ? record.error : '';
+  return detail || error;
 }
 
 async function safeFetchJson<T>(input: string): Promise<T | null> {
