@@ -84,3 +84,5 @@
 - 2026-04-26: Desktop `AppShell` sidebar can collapse to an 86px rail. Keep nav usable through marker buttons with hover/focus labels, persist the state in localStorage, and avoid overlapping the collapsed rail toggle with the brand mark.
 
 - 2026-04-26: Orbit controls should treat returning to Live as a reset to real-time 1x. CDM relative labels in Briefing should be based on displayed ORBIT TIME and prefer hour/minute countdowns instead of day-level labels. When a satellite is focused, both 2D and 3D map views should keep following that moving target.
+
+- 2026-04-26: CDM Focus Inspector chips can represent untracked catalog objects; clicking an untracked CDM chip should add that catalog object to the selected fleet before focusing it. Keep CDM chip rows single-line with truncation, and keep collapsed sidebar controls fully inside the rail with high-z hover labels.

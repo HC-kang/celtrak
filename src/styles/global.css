@@ -109,8 +109,10 @@ textarea:focus-visible {
 .app-shell__sidebar {
   position: sticky;
   top: 0;
+  z-index: 70;
   height: 100vh;
   padding: 32px 24px;
+  overflow: visible;
   border-right: 1px solid rgba(255, 255, 255, 0.12);
   background:
     linear-gradient(180deg, rgba(0, 112, 204, 0.18), transparent 26%),
@@ -158,10 +160,19 @@ textarea:focus-visible {
 }
 
 .app-shell__sidebar--collapsed .sidebar-toggle {
-  right: -18px;
+  top: 88px;
+  right: auto;
+  left: 50%;
+  width: 32px;
+  min-height: 32px;
+  transform: translateX(-50%);
   background: #020409;
   border-color: rgba(83, 177, 255, 0.36);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
+}
+
+.app-shell__sidebar--collapsed .sidebar-toggle:active {
+  transform: translateX(-50%) scale(0.96);
 }
 
 .app-shell__content {
@@ -248,7 +259,7 @@ textarea:focus-visible {
 
 .app-shell__sidebar--collapsed .nav-list {
   align-items: center;
-  margin-top: 22px;
+  margin-top: 58px;
 }
 
 .nav-link,
@@ -312,7 +323,7 @@ textarea:focus-visible {
   position: absolute;
   top: 50%;
   left: calc(100% + 12px);
-  z-index: 80;
+  z-index: 220;
   width: max-content;
   max-width: 190px;
   padding: 8px 10px;
@@ -935,13 +946,15 @@ textarea:focus-visible {
 }
 
 .war-room__toolbar .simulation-controls__picker .input {
+  min-width: 0;
   min-height: 40px;
   padding: 9px 12px;
 }
 
 .war-room__toolbar .simulation-controls__picker .button {
+  min-width: 74px;
   min-height: 40px;
-  padding: 9px 14px;
+  padding: 9px 12px;
 }
 
 .war-room .orbit-map {
@@ -1150,7 +1163,10 @@ textarea:focus-visible {
 }
 
 .focus-inspector__entity-line--subtle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   margin-top: 5px;
+  max-width: 100%;
 }
 
 .focus-inspector__entity-line > span:not(.focus-inspector__chip) {
@@ -1162,6 +1178,7 @@ textarea:focus-visible {
 .focus-inspector__chip {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   max-width: 100%;
   min-height: 26px;
   min-width: 0;
@@ -1182,6 +1199,10 @@ textarea:focus-visible {
     border-color 160ms ease,
     color 160ms ease,
     box-shadow 160ms ease;
+}
+
+.focus-inspector__entity-line--subtle .focus-inspector__chip {
+  width: 100%;
 }
 
 button.focus-inspector__chip {
@@ -1208,6 +1229,37 @@ button.focus-inspector__chip:focus-visible,
   box-shadow:
     0 0 0 2px rgba(0, 112, 204, 0.54),
     0 0 20px rgba(255, 255, 255, 0.26);
+}
+
+.focus-inspector__chip--addable {
+  border-color: rgba(83, 177, 255, 0.48);
+  border-style: dashed;
+  color: #d7f1ff;
+  background: rgba(30, 174, 219, 0.1);
+}
+
+button.focus-inspector__chip--addable::after {
+  content: "+";
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 999px;
+  color: #ffffff;
+  background: rgba(83, 177, 255, 0.18);
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.focus-inspector__chip--loading {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+button.focus-inspector__chip:disabled {
+  cursor: wait;
 }
 
 .focus-inspector__chip--ground-station:not(.focus-inspector__chip--active) {
@@ -1342,6 +1394,10 @@ button.focus-inspector__chip:focus-visible,
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.055);
   border-left: 3px solid rgba(83, 177, 255, 0.68);
+}
+
+.focus-inspector__row > div {
+  min-width: 0;
 }
 
 .focus-inspector__row strong {
@@ -2177,13 +2233,18 @@ button.focus-inspector__chip:focus-visible,
 
 .simulation-controls__row {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
+  grid-template-columns: minmax(78px, 92px) minmax(0, 1fr);
   gap: 10px;
   align-items: center;
+  min-width: 0;
   padding: 8px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 18px;
   background: rgba(0, 0, 0, 0.16);
+}
+
+.simulation-controls__row > * {
+  min-width: 0;
 }
 
 .simulation-controls__summary {
@@ -2229,12 +2290,14 @@ button.focus-inspector__chip:focus-visible,
 
 .simulation-controls__picker {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) repeat(2, minmax(70px, auto));
   align-items: stretch;
+  min-width: 0;
+  gap: 8px;
 }
 
 .simulation-controls__picker .button {
-  min-width: 82px;
+  min-width: 70px;
 }
 
 .event-timeline__item {
