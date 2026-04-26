@@ -78,3 +78,5 @@
 - 2026-04-26: User clarified satellite name rect omission is acceptable in dense 2D canvas mode, but 3D rendered satellites should all expose labels. More was merged into Ground Stations to keep mobile bottom tabs to one row; `/more` now redirects to `/stations`.
 
 - 2026-04-26: Focus Inspector entity names should act as lightweight focus chips. Hover/focus on chips previews the target on 2D/3D maps with a cyan preview state, while the committed focus remains white so preview and focus are visually distinct.
+
+- 2026-04-26: Map view colors should mirror Focus Inspector semantics. Use critical red `#c81b3a`, warn amber `#f5c84b`, active-contact cyan `#1eaedb`, tracked blue `#53b1ff`, focused white, and dim gray for idle ground stations; avoid reusing warn/critical colors for contact-window AOS/LOS.

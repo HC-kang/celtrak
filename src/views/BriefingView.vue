@@ -156,24 +156,26 @@ const cdmScopeConjunctions = computed(() => {
   const catalogNumbers = cdmQueryCatalogNumbers.value;
   return catalogNumbers.length ? filterConjunctionsByCatalog(records, catalogNumbers) : [];
 });
-const riskSatelliteIds = computed(() => {
-  const ids = new Set<string>();
+const riskSatelliteTones = computed<Record<string, 'warn' | 'critical'>>(() => {
+  const tones: Record<string, 'warn' | 'critical'> = {};
   for (const item of cdmScopeConjunctions.value) {
-    if (cdmSeverity(item) === 'info') continue;
-    addCatalogRiskId(ids, item.primary.catalogNumber);
-    addCatalogRiskId(ids, item.secondary.catalogNumber);
+    const severity = cdmSeverity(item);
+    if (severity === 'info') continue;
+    addCatalogRiskTone(tones, item.primary.catalogNumber, severity);
+    addCatalogRiskTone(tones, item.secondary.catalogNumber, severity);
   }
   for (const item of store.filteredDecayPredictions) {
     if (item.intersectsSelectedFleet) {
-      addCatalogRiskId(ids, item.catalogNumber);
+      addCatalogRiskTone(tones, item.catalogNumber, 'warn');
     }
   }
   for (const anomaly of store.anomalies) {
     if (anomaly.closedAt || anomaly.severity === 'INFO') continue;
-    ids.add(refKey(anomaly.satelliteRef));
+    addRiskTone(tones, refKey(anomaly.satelliteRef), anomaly.severity === 'CRITICAL' ? 'critical' : 'warn');
   }
-  return [...ids];
+  return tones;
 });
+const riskSatelliteIds = computed(() => Object.keys(riskSatelliteTones.value));
 
 const focusedLinks = computed(() => {
   const target = focusedTarget.value;
@@ -412,10 +414,15 @@ function filterConjunctionsByCatalog(records: ConjunctionRecord[], catalogNumber
   );
 }
 
-function addCatalogRiskId(ids: Set<string>, catalogNumber: number | undefined) {
+function addCatalogRiskTone(tones: Record<string, 'warn' | 'critical'>, catalogNumber: number | undefined, tone: 'warn' | 'critical') {
   if (catalogNumber) {
-    ids.add(`catalog:${catalogNumber}`);
+    addRiskTone(tones, `catalog:${catalogNumber}`, tone);
   }
+}
+
+function addRiskTone(tones: Record<string, 'warn' | 'critical'>, id: string, tone: 'warn' | 'critical') {
+  if (tones[id] === 'critical') return;
+  tones[id] = tone;
 }
 
 function cdmSeverityLabel(item: ConjunctionRecord) {
@@ -606,6 +613,7 @@ watch(
             :orbit-mode="orbitMode"
             :orbit-time-iso="displayedOrbitTimeIso"
             :risk-satellite-ids="riskSatelliteIds"
+            :risk-satellite-tones="riskSatelliteTones"
             :data-saver="store.preferences.dataSaver"
             @focus-target="setFocusedTarget"
           />
@@ -619,6 +627,7 @@ watch(
             :orbit-time-iso="displayedOrbitTimeIso"
             :orbit-mode="orbitMode"
             :risk-satellite-ids="riskSatelliteIds"
+            :risk-satellite-tones="riskSatelliteTones"
             :data-saver="store.preferences.dataSaver"
             @focus-target="setFocusedTarget"
           />

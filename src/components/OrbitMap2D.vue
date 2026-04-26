@@ -15,6 +15,7 @@ const props = defineProps<{
   orbitMode: 'live' | 'simulation';
   orbitTimeIso: string;
   riskSatelliteIds?: string[];
+  riskSatelliteTones?: Record<string, 'warn' | 'critical'>;
 }>();
 
 const emit = defineEmits<{
@@ -37,9 +38,16 @@ const SATELLITE_LABEL_RADIUS = 8;
 const SATELLITE_STATE_COLORS = {
   focused: '#ffffff',
   preview: '#d7f1ff',
-  risk: '#ff4d2d',
+  critical: '#c81b3a',
+  warn: '#f5c84b',
   contact: '#1eaedb',
   tracked: '#53b1ff',
+} as const;
+const STATION_STATE_COLORS = {
+  focused: '#ffffff',
+  preview: '#d7f1ff',
+  activeContact: '#1eaedb',
+  idle: '#94a3b8',
 } as const;
 type SatelliteVisualTone = keyof typeof SATELLITE_STATE_COLORS;
 type SatRec = ReturnType<typeof satellite.twoline2satrec>;
@@ -86,16 +94,6 @@ onUnmounted(() => {
   resizeObserver?.disconnect();
 });
 
-const stationPoints = computed(() =>
-  (props.groundStations ?? []).filter((station) => station.enabled).map((station, index) => ({
-    id: station.id,
-    ...toMapPoint(station.lonDeg, station.latDeg),
-    name: station.name,
-    elevationMaskDeg: station.elevationMaskDeg,
-    labelAnchor: index % 2 === 0 ? 'start' : 'end',
-  })),
-);
-
 const livePlaybackRate = computed(() => props.livePlaybackRate ?? 1);
 const displayedTime = computed(() => new Date(props.orbitTimeIso));
 const displayedTimestamp = computed(() => formatTimestampWithSeconds(displayedTime.value));
@@ -136,6 +134,19 @@ const usesCanvasDynamicLayer = computed(() => plotted.value.length > CANVAS_DYNA
 const riskSatelliteIdSet = computed(() => new Set(props.riskSatelliteIds ?? []));
 const activeContactSatelliteIdSet = computed(
   () => new Set((props.contactLinks ?? []).filter((link) => link.status === 'IN_CONTACT').map((link) => link.satelliteId)),
+);
+const activeContactStationIdSet = computed(
+  () => new Set((props.contactLinks ?? []).filter((link) => link.status === 'IN_CONTACT').map((link) => link.groundStationId)),
+);
+const stationPoints = computed(() =>
+  (props.groundStations ?? []).filter((station) => station.enabled).map((station, index) => ({
+    id: station.id,
+    ...toMapPoint(station.lonDeg, station.latDeg),
+    activeContact: activeContactStationIdSet.value.has(station.id),
+    name: station.name,
+    elevationMaskDeg: station.elevationMaskDeg,
+    labelAnchor: index % 2 === 0 ? 'start' : 'end',
+  })),
 );
 const trailStepMinutes = computed(() => {
   if (props.dataSaver) return 10;
@@ -657,7 +668,9 @@ function targetMatches(left: MapFocusTarget | null | undefined, right: MapFocusT
 function satelliteVisualTone(id: string): SatelliteVisualTone {
   if (targetMatches(props.focusedTarget, { type: 'satellite', id })) return 'focused';
   if (targetMatches(props.hoveredTarget, { type: 'satellite', id })) return 'preview';
-  if (riskSatelliteIdSet.value.has(id)) return 'risk';
+  const riskTone = props.riskSatelliteTones?.[id] ?? (riskSatelliteIdSet.value.has(id) ? 'critical' : undefined);
+  if (riskTone === 'critical') return 'critical';
+  if (riskTone === 'warn') return 'warn';
   if (activeContactSatelliteIdSet.value.has(id)) return 'contact';
   return 'tracked';
 }
@@ -808,17 +821,34 @@ function drawCanvasStations(context: CanvasRenderingContext2D, metrics: CanvasMe
       const screen = mapToCanvasPoint(point, metrics);
       const focused = targetMatches(props.focusedTarget, { type: 'groundStation', id: station.id });
       const previewed = !focused && targetMatches(props.hoveredTarget, { type: 'groundStation', id: station.id });
+      const color = focused
+        ? STATION_STATE_COLORS.focused
+        : previewed
+          ? STATION_STATE_COLORS.preview
+          : station.activeContact
+            ? STATION_STATE_COLORS.activeContact
+            : STATION_STATE_COLORS.idle;
       context.beginPath();
       context.arc(screen.x, screen.y, 24, 0, Math.PI * 2);
-      context.strokeStyle = focused ? 'rgba(255, 255, 255, 0.7)' : previewed ? 'rgba(215, 241, 255, 0.7)' : 'rgba(30, 174, 219, 0.34)';
+      context.strokeStyle = focused
+        ? 'rgba(255, 255, 255, 0.7)'
+        : previewed
+          ? 'rgba(215, 241, 255, 0.7)'
+          : station.activeContact
+            ? 'rgba(30, 174, 219, 0.34)'
+            : 'rgba(148, 163, 184, 0.34)';
       context.lineWidth = focused ? 2.2 : previewed ? 2.1 : 1.4;
       context.setLineDash(previewed ? [2, 5] : []);
       context.stroke();
       context.setLineDash([]);
       context.beginPath();
       context.arc(screen.x, screen.y, focused ? 8 : previewed ? 7.4 : 6, 0, Math.PI * 2);
-      context.fillStyle = focused ? '#ffffff' : previewed ? '#d7f1ff' : '#1eaedb';
-      context.shadowColor = previewed ? 'rgba(215, 241, 255, 0.7)' : 'rgba(30, 174, 219, 0.7)';
+      context.fillStyle = color;
+      context.shadowColor = previewed
+        ? 'rgba(215, 241, 255, 0.7)'
+        : station.activeContact
+          ? 'rgba(30, 174, 219, 0.7)'
+          : 'rgba(148, 163, 184, 0.46)';
       context.shadowBlur = focused || previewed ? 12 : 9;
       context.fill();
       context.shadowBlur = 0;
@@ -1281,6 +1311,7 @@ watch(
             :class="{
               'orbit-map__station--focused': targetMatches(props.focusedTarget, { type: 'groundStation', id: station.id }),
               'orbit-map__station--preview': !targetMatches(props.focusedTarget, { type: 'groundStation', id: station.id }) && targetMatches(props.hoveredTarget, { type: 'groundStation', id: station.id }),
+              'orbit-map__station--active-contact': station.activeContact,
             }"
             role="button"
             tabindex="0"
@@ -1313,7 +1344,8 @@ watch(
           :class="{
             'orbit-map__track--focused': item.tone === 'focused',
             'orbit-map__track--preview': item.tone === 'preview',
-            'orbit-map__track--risk': item.tone === 'risk',
+            'orbit-map__track--critical': item.tone === 'critical',
+            'orbit-map__track--warn': item.tone === 'warn',
             'orbit-map__track--contact': item.tone === 'contact',
           }"
           role="button"
