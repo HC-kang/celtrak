@@ -189,7 +189,7 @@ describe('OrbitMap2D', () => {
     }
   });
 
-  it('keeps small touch-map SVG trails smooth instead of dropping to coarse samples', async () => {
+  it('keeps small touch-map SVG trails dense without spline overbending', async () => {
     const restoreTouch = mockMaxTouchPoints(5);
     try {
       const wrapper = mount(OrbitMap2D, {
@@ -204,8 +204,9 @@ describe('OrbitMap2D', () => {
       await nextTick();
 
       expect(wrapper.find('.orbit-map__dynamic-canvas').exists()).toBe(false);
-      const trailPath = wrapper.find('.orbit-map__trail').attributes('d') ?? '';
-      expect(trailPath.match(/ C /g)?.length ?? 0).toBeGreaterThan(40);
+      const trailPaths = wrapper.findAll('.orbit-map__trail').map((trail) => trail.attributes('d') ?? '').join(' ');
+      expect(trailPaths).not.toContain(' C ');
+      expect(trailPaths.match(/ L /g)?.length ?? 0).toBeGreaterThan(40);
     } finally {
       restoreTouch();
     }

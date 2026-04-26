@@ -663,26 +663,12 @@ function withWorldOffset<T extends MapPoint>(point: T, worldOffset: number): T {
   return { ...point, x: point.x + worldOffset };
 }
 
-function formatSmoothPath(points: MapPoint[]) {
+function formatTrackPath(points: MapPoint[]) {
   if (!points.length) return '';
   if (points.length === 1) return `M ${formatPoint(points[0])}`;
-  if (points.length === 2) return `M ${formatPoint(points[0])} L ${formatPoint(points[1])}`;
-
   const commands = [`M ${formatPoint(points[0])}`];
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const p0 = points[Math.max(index - 1, 0)];
-    const p1 = points[index];
-    const p2 = points[index + 1];
-    const p3 = points[Math.min(index + 2, points.length - 1)];
-    const c1 = {
-      x: p1.x + (p2.x - p0.x) / 6,
-      y: p1.y + (p2.y - p0.y) / 6,
-    };
-    const c2 = {
-      x: p2.x - (p3.x - p1.x) / 6,
-      y: p2.y - (p3.y - p1.y) / 6,
-    };
-    commands.push(`C ${formatPoint(c1)} ${formatPoint(c2)} ${formatPoint(p2)}`);
+  for (const point of points.slice(1)) {
+    commands.push(`L ${formatPoint(point)}`);
   }
   return commands.join(' ');
 }
@@ -951,7 +937,7 @@ function drawCanvasTrails(context: CanvasRenderingContext2D, metrics: CanvasMetr
     for (const item of plotted.value) {
       context.strokeStyle = item.color;
       for (const segment of item.trailSegments) {
-        strokeSmoothCanvasPath(context, segment, world.offset, metrics);
+        strokeCanvasTrackPath(context, segment, world.offset, metrics);
       }
     }
   }
@@ -1119,32 +1105,16 @@ function drawCanvasSatelliteLabel(
   context.restore();
 }
 
-function strokeSmoothCanvasPath(context: CanvasRenderingContext2D, points: MapPoint[], worldOffset: number, metrics: CanvasMetrics) {
+function strokeCanvasTrackPath(context: CanvasRenderingContext2D, points: MapPoint[], worldOffset: number, metrics: CanvasMetrics) {
   const shifted = points.map((point) => ({ x: point.x + worldOffset, y: point.y }));
   if (!polylineIntersectsView(shifted, metrics)) return;
   if (!shifted.length) return;
   const first = mapToCanvasPoint(shifted[0], metrics);
   context.beginPath();
   context.moveTo(first.x, first.y);
-  if (shifted.length === 1) {
-    context.stroke();
-    return;
-  }
-  if (shifted.length === 2) {
-    const second = mapToCanvasPoint(shifted[1], metrics);
-    context.lineTo(second.x, second.y);
-    context.stroke();
-    return;
-  }
-  for (let index = 0; index < shifted.length - 1; index += 1) {
-    const p0 = shifted[Math.max(index - 1, 0)];
-    const p1 = shifted[index];
-    const p2 = shifted[index + 1];
-    const p3 = shifted[Math.min(index + 2, shifted.length - 1)];
-    const c1 = mapToCanvasPoint({ x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 }, metrics);
-    const c2 = mapToCanvasPoint({ x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 }, metrics);
-    const end = mapToCanvasPoint(p2, metrics);
-    context.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, end.x, end.y);
+  for (const point of shifted.slice(1)) {
+    const next = mapToCanvasPoint(point, metrics);
+    context.lineTo(next.x, next.y);
   }
   context.stroke();
 }
@@ -1574,7 +1544,7 @@ watch(
           <path
             v-for="(segment, segmentIndex) in item.trailSegments"
             :key="`${item.entry.satcat.catalogNumber}-${segmentIndex}`"
-            :d="formatSmoothPath(segment)"
+            :d="formatTrackPath(segment)"
             class="orbit-map__trail"
             :stroke="item.color"
             marker-end="url(#trackArrow)"
