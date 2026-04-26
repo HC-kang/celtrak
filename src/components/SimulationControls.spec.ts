@@ -23,8 +23,8 @@ describe('SimulationControls', () => {
     await buttonByText(wrapper, '-30m').trigger('click');
     await buttonByText(wrapper, '+1h').trigger('click');
     await buttonByText(wrapper, '+3h').trigger('click');
-    await buttonByText(wrapper, '20x').trigger('click');
-    await buttonByText(wrapper, '300x').trigger('click');
+    await wrapper.find('input[type="range"]').setValue('20');
+    await wrapper.find('input[type="range"]').setValue('300');
     await buttonByText(wrapper, 'Live').trigger('click');
 
     expect(wrapper.emitted('shift')).toEqual([[-12], [-0.5], [1], [3]]);
@@ -56,7 +56,8 @@ describe('SimulationControls', () => {
     });
 
     expect(wrapper.text()).toContain('Simulation orbit');
-    expect((buttonByText(wrapper, '60x').element as HTMLButtonElement).disabled).toBe(true);
+    expect(wrapper.text()).toContain('Speed');
+    expect((wrapper.find('input[type="range"]').element as HTMLInputElement).disabled).toBe(false);
   });
 
   it('connects kebab-case event listeners through a parent component', async () => {
@@ -93,7 +94,7 @@ describe('SimulationControls', () => {
     await buttonByText(wrapper, 'Live').trigger('click');
     expect(wrapper.text()).toContain('Live orbit');
 
-    await buttonByText(wrapper, '300x').trigger('click');
-    expect(buttonByText(wrapper, '300x').classes()).toContain('button--selected');
+    await wrapper.find('input[type="range"]').setValue('300');
+    expect(wrapper.text()).toContain('300x');
   });
 });

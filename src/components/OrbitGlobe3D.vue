@@ -13,6 +13,7 @@ const props = defineProps<{
   hoveredTarget?: MapFocusTarget | null;
   groundStations?: GroundStation[];
   dataSaver?: boolean;
+  livePlaybackRate?: number;
   orbitTimeIso: string;
   orbitMode: 'live' | 'simulation';
   riskSatelliteIds?: string[];
@@ -26,6 +27,7 @@ const emit = defineEmits<{
 const container = ref<HTMLDivElement | null>(null);
 const isInteracting = ref(false);
 const autoRotate = ref(true);
+const playbackRate = computed(() => props.livePlaybackRate ?? 1);
 
 const SATELLITE_STATE_COLORS = {
   focused: '#ffffff',
@@ -99,7 +101,7 @@ const activeContactSatelliteIdSet = computed(
 );
 const riskSatelliteIdSet = computed(() => new Set(props.riskSatelliteIds ?? []));
 const orbitModeLabel = computed(() => (props.orbitMode === 'simulation' ? 'SIM' : 'LIVE'));
-const clockLabel = computed(() => formatTimestamp(props.orbitTimeIso));
+const clockLabel = computed(() => `${formatTimestamp(props.orbitTimeIso)} · ${playbackRate.value}x`);
 
 function buildScene() {
   if (!container.value) return;
