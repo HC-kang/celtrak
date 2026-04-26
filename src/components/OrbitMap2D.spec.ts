@@ -151,6 +151,39 @@ describe('OrbitMap2D', () => {
 
       expect(wrapper.find('.orbit-map__dynamic-canvas').exists()).toBe(true);
       expect(wrapper.find('.orbit-map__track').exists()).toBe(false);
+      expect(wrapper.classes()).toContain('orbit-map--touch-budget');
+    } finally {
+      restoreTouch();
+    }
+  });
+
+  it('caps OSM tile detail on touch maps to reduce mobile SVG work', async () => {
+    const restoreTouch = mockMaxTouchPoints(5);
+    try {
+      const wrapper = mount(OrbitMap2D, {
+        props: {
+          satellites: [satelliteEntry],
+          groundStations: [station],
+          contactLinks: [],
+          orbitMode: 'live',
+          orbitTimeIso: '2026-04-25T00:00:00.000Z',
+        },
+      });
+      const svg = wrapper.find('svg').element as SVGSVGElement;
+      svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1024, height: 1024, right: 1024, bottom: 1024, x: 0, y: 0, toJSON: () => ({}) });
+
+      for (let index = 0; index < 12; index += 1) {
+        await wrapper.find('svg').trigger('wheel', {
+          deltaY: -900,
+          clientX: 512,
+          clientY: 512,
+        });
+      }
+      await nextTick();
+
+      const tileZooms = wrapper.findAll('.orbit-map__tile').map((tile) => Number(/\/(\d+)\/\d+\/\d+\.png$/.exec(tile.attributes('href') ?? '')?.[1] ?? 0));
+      expect(tileZooms.some((tileZoom) => tileZoom === 3)).toBe(true);
+      expect(tileZooms.every((tileZoom) => tileZoom <= 3)).toBe(true);
     } finally {
       restoreTouch();
     }

@@ -103,3 +103,5 @@
 - 2026-04-26: Orbit playback pause should be represented as `livePlaybackRate = 0` while preserving the last non-zero signed speed separately for resume. Tracked Objects action buttons need sidebar-specific compact CSS with enough card height; generic `panel-card__action-link` sizing can override earlier compact rules if specificity is too low.
 
 - 2026-04-26: iPad 2D map slowness likely comes from small tracked sets staying in SVG mode while still recomputing TLE parsing, full trails, night mask paths, and deep redraw watchers every 250ms. Touch/tablet 2D maps now switch dynamic layers to canvas from medium track counts, cache satrec/trail segments, quantize trail/night-mask refresh, and keep SVG mode mainly for small non-touch cases.
+
+- 2026-04-26: iPhone/iPad 2D map slowness can persist even after dynamic objects move to canvas because Safari still composites SVG OSM tiles, CSS filters, blend overlays, backdrop filters, and high-DPR canvas redraws. Touch 2D maps now use a rendering budget: lower OSM tile zoom, no tile/backdrop filters, lower canvas DPR, coarser trails, and RAF-batched drag center updates.

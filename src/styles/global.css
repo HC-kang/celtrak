@@ -2699,6 +2699,11 @@ button.focus-inspector__chip:disabled {
   mix-blend-mode: screen;
 }
 
+.orbit-map--touch-budget::after {
+  opacity: 0.54;
+  mix-blend-mode: normal;
+}
+
 .orbit-map--2d svg,
 .orbit-map--3d canvas {
   position: absolute;
@@ -2923,6 +2928,20 @@ button.focus-inspector__chip:disabled {
   image-rendering: auto;
   opacity: 0.96;
   filter: grayscale(0.9) saturate(0.7) brightness(0.58) contrast(1.14);
+}
+
+.orbit-map--touch-budget .orbit-map__tile {
+  opacity: 0.62;
+  filter: none;
+}
+
+.orbit-map--touch-budget .orbit-map__nav,
+.orbit-map--touch-budget .orbit-map__clock,
+.orbit-map--touch-budget .orbit-map__hud--bottom,
+.orbit-map--touch-budget .orbit-map__interaction-hint,
+.orbit-map--touch-budget .orbit-map__attribution {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .orbit-map__interaction-hint {
