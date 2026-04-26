@@ -80,3 +80,5 @@
 - 2026-04-26: Focus Inspector entity names should act as lightweight focus chips. Hover/focus on chips previews the target on 2D/3D maps with a cyan preview state, while the committed focus remains white so preview and focus are visually distinct.
 
 - 2026-04-26: Map view colors should mirror Focus Inspector semantics. Use critical red `#c81b3a`, warn amber `#f5c84b`, active-contact cyan `#1eaedb`, tracked blue `#53b1ff`, focused white, and dim gray for idle ground stations; avoid reusing warn/critical colors for contact-window AOS/LOS.
+
+- 2026-04-26: Desktop `AppShell` sidebar can collapse to an 86px rail. Keep nav usable through marker buttons with hover/focus labels, persist the state in localStorage, and avoid overlapping the collapsed rail toggle with the brand mark.
