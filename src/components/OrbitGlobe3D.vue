@@ -16,6 +16,7 @@ const props = defineProps<{
   orbitTimeIso: string;
   orbitMode: 'live' | 'simulation';
   riskSatelliteIds?: string[];
+  riskSatelliteTones?: Record<string, 'warn' | 'critical'>;
 }>();
 
 const emit = defineEmits<{
@@ -29,9 +30,16 @@ const autoRotate = ref(true);
 const SATELLITE_STATE_COLORS = {
   focused: '#ffffff',
   preview: '#d7f1ff',
-  risk: '#ff4d2d',
+  critical: '#c81b3a',
+  warn: '#f5c84b',
   contact: '#1eaedb',
   tracked: '#53b1ff',
+} as const;
+const STATION_STATE_COLORS = {
+  focused: '#ffffff',
+  preview: '#d7f1ff',
+  activeContact: '#1eaedb',
+  idle: '#94a3b8',
 } as const;
 const EARTH_RADIUS = 1.5;
 const DEFAULT_CAMERA_DISTANCE = 5.45;
@@ -307,7 +315,8 @@ function updateSatellites() {
       new THREE.MeshStandardMaterial({
         color,
         emissive: color,
-        emissiveIntensity: focused ? 2.6 : previewed ? 2.25 : tone === 'risk' ? 1.9 : tone === 'contact' ? 1.55 : 1.15,
+        emissiveIntensity:
+          focused ? 2.6 : previewed ? 2.25 : tone === 'critical' ? 2.05 : tone === 'warn' ? 1.85 : tone === 'contact' ? 1.55 : 1.15,
         roughness: 0.28,
       }),
     );
@@ -316,11 +325,11 @@ function updateSatellites() {
     group.add(marker);
 
     const halo = new THREE.Mesh(
-      new THREE.SphereGeometry(focused ? 0.18 : previewed ? 0.17 : tone === 'risk' ? 0.15 : 0.12, 22, 22),
+      new THREE.SphereGeometry(focused ? 0.18 : previewed ? 0.17 : tone === 'critical' || tone === 'warn' ? 0.15 : 0.12, 22, 22),
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: focused ? 0.34 : previewed ? 0.3 : tone === 'risk' ? 0.28 : 0.18,
+        opacity: focused ? 0.34 : previewed ? 0.3 : tone === 'critical' || tone === 'warn' ? 0.28 : 0.18,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       }),
@@ -365,7 +374,15 @@ function updateGroundStations() {
     const focused = targetMatches(props.focusedTarget, focusTarget);
     const previewed = !focused && targetMatches(props.hoveredTarget, focusTarget);
     const hasActiveContact = activeStationIds.has(station.id);
-    const color = new THREE.Color(focused ? '#ffffff' : previewed ? '#d7f1ff' : hasActiveContact ? '#1eaedb' : '#53b1ff');
+    const color = new THREE.Color(
+      focused
+        ? STATION_STATE_COLORS.focused
+        : previewed
+          ? STATION_STATE_COLORS.preview
+          : hasActiveContact
+            ? STATION_STATE_COLORS.activeContact
+            : STATION_STATE_COLORS.idle,
+    );
     const surface = latLonToVector(station.latDeg, station.lonDeg, EARTH_RADIUS + 0.035);
     const normal = surface.clone().normalize();
 
@@ -475,7 +492,9 @@ function updateContactLinks() {
 function satelliteVisualTone(id: string): SatelliteVisualTone {
   if (targetMatches(props.focusedTarget, { type: 'satellite', id })) return 'focused';
   if (targetMatches(props.hoveredTarget, { type: 'satellite', id })) return 'preview';
-  if (riskSatelliteIdSet.value.has(id)) return 'risk';
+  const riskTone = props.riskSatelliteTones?.[id] ?? (riskSatelliteIdSet.value.has(id) ? 'critical' : undefined);
+  if (riskTone === 'critical') return 'critical';
+  if (riskTone === 'warn') return 'warn';
   if (activeContactSatelliteIdSet.value.has(id)) return 'contact';
   return 'tracked';
 }
@@ -1460,6 +1479,12 @@ watch(
 
 watch(
   () => props.riskSatelliteIds,
+  () => updateSatellites(),
+  { deep: true },
+);
+
+watch(
+  () => props.riskSatelliteTones,
   () => updateSatellites(),
   { deep: true },
 );

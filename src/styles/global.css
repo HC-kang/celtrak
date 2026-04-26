@@ -2538,8 +2538,12 @@ button.focus-inspector__chip:focus-visible,
 }
 
 .orbit-map__station {
-  fill: url("#stationBeam");
+  fill: var(--contact-idle);
   filter: url("#orbitGlow");
+}
+
+.orbit-map__station--active-contact {
+  fill: url("#stationBeam");
 }
 
 .orbit-map__station-range {
@@ -2566,11 +2570,19 @@ button.focus-inspector__chip:focus-visible,
   stroke-dasharray: none;
 }
 
+.orbit-map__station--focused {
+  fill: #ffffff;
+}
+
 .orbit-map__station--preview .orbit-map__station-range {
   fill: rgba(215, 241, 255, 0.1);
   stroke: #d7f1ff;
   stroke-width: 2.2;
   stroke-dasharray: 2 5;
+}
+
+.orbit-map__station--preview {
+  fill: #d7f1ff;
 }
 
 @keyframes satellite-pulse {
