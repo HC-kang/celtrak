@@ -214,7 +214,7 @@ const orbitStats = computed(() => {
     stations,
     avgAltitude: Math.round(avgAltitude).toLocaleString(),
     mode: props.orbitMode === 'simulation' ? 'SIM' : 'LIVE',
-    clockLabel: props.orbitMode === 'simulation' ? 'SGP4 simulation' : `SGP4 live · ${livePlaybackRate.value}x`,
+    clockLabel: props.orbitMode === 'simulation' ? `SGP4 simulation · ${livePlaybackRate.value}x` : `SGP4 live · ${livePlaybackRate.value}x`,
   };
 });
 

@@ -217,12 +217,11 @@ watch(isMobileViewport, (mobile) => {
   }
 });
 
-const orbitMode = computed(() => (store.simulationTimeIso ? 'simulation' : 'live'));
 const displayedOrbitTime = computed(() => {
-  if (store.simulationTimeIso) return new Date(store.simulationTimeIso);
   const elapsedMs = orbitClockTick.value - liveWallClockAnchor.value;
   return new Date(liveOrbitAnchor.value + elapsedMs * livePlaybackRate.value);
 });
+const orbitMode = computed(() => (store.simulationTimeIso ? 'simulation' : 'live'));
 const displayedOrbitTimeIso = computed(() => displayedOrbitTime.value.toISOString());
 
 const warRoomStats = computed(() => [
@@ -309,14 +308,18 @@ function setRenderMode(mode: '2d' | '3d') {
 
 function shiftOrbitHours(hours: number) {
   const baseMs = displayedOrbitTime.value.getTime();
-  store.setSimulationTime(new Date(baseMs + hours * 60 * 60 * 1000).toISOString());
+  const nextTimeIso = new Date(baseMs + hours * 60 * 60 * 1000).toISOString();
+  store.setSimulationTime(nextTimeIso);
+  anchorOrbitPlayback(nextTimeIso);
 }
 
 function setOrbitTime(value: string | null) {
-  store.setSimulationTime(value);
   if (!value) {
     resetLiveOrbit();
+    return;
   }
+  store.setSimulationTime(value);
+  anchorOrbitPlayback(value);
 }
 
 function resetLiveOrbit() {
@@ -328,7 +331,15 @@ function resetLiveOrbit() {
   store.resetSimulationTime();
 }
 
-function setLivePlaybackRate(rate: number) {
+function anchorOrbitPlayback(orbitTimeIso: string) {
+  const nextTimeMs = new Date(orbitTimeIso).getTime();
+  const wallNow = Date.now();
+  liveWallClockAnchor.value = wallNow;
+  liveOrbitAnchor.value = Number.isFinite(nextTimeMs) ? nextTimeMs : wallNow;
+  orbitClockTick.value = wallNow;
+}
+
+function setPlaybackRate(rate: number) {
   const currentDisplayedMs = displayedOrbitTime.value.getTime();
   const wallNow = Date.now();
   livePlaybackRate.value = rate;
@@ -624,7 +635,7 @@ watch(
               :live-playback-rate="livePlaybackRate"
               :orbit-time-iso="displayedOrbitTimeIso"
               :simulation-time-iso="store.simulationTimeIso"
-              @set-playback-rate="setLivePlaybackRate"
+              @set-playback-rate="setPlaybackRate"
               @set-orbit-time="setOrbitTime"
               @shift="shiftOrbitHours"
               @reset-live="resetLiveOrbit"
@@ -677,6 +688,7 @@ watch(
             :focused-target="focusedTarget"
             :hovered-target="hoveredTarget"
             :ground-stations="store.groundStations"
+            :live-playback-rate="livePlaybackRate"
             :orbit-time-iso="displayedOrbitTimeIso"
             :orbit-mode="orbitMode"
             :risk-satellite-ids="riskSatelliteIds"
