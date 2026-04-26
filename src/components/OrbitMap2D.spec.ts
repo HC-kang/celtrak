@@ -189,6 +189,28 @@ describe('OrbitMap2D', () => {
     }
   });
 
+  it('keeps small touch-map SVG trails smooth instead of dropping to coarse samples', async () => {
+    const restoreTouch = mockMaxTouchPoints(5);
+    try {
+      const wrapper = mount(OrbitMap2D, {
+        props: {
+          satellites: [satelliteEntry],
+          groundStations: [station],
+          contactLinks: [],
+          orbitMode: 'live',
+          orbitTimeIso: '2026-04-25T00:00:00.000Z',
+        },
+      });
+      await nextTick();
+
+      expect(wrapper.find('.orbit-map__dynamic-canvas').exists()).toBe(false);
+      const trailPath = wrapper.find('.orbit-map__trail').attributes('d') ?? '';
+      expect(trailPath.match(/ C /g)?.length ?? 0).toBeGreaterThan(40);
+    } finally {
+      restoreTouch();
+    }
+  });
+
   it('includes satellite label rectangles in map hit testing', async () => {
     const wrapper = mount(OrbitMap2D, {
       props: {

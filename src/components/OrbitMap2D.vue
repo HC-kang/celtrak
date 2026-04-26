@@ -196,7 +196,6 @@ const stationPoints = computed(() =>
 const trailStepMinutes = computed(() => {
   if (props.dataSaver) return 10;
   if (props.satellites.length > 80) return 12;
-  if (usesTouchRenderingBudget.value) return 8;
   if (usesCanvasDynamicLayer.value) return 6;
   return 2;
 });

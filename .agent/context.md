@@ -107,3 +107,5 @@
 - 2026-04-26: iPhone/iPad 2D map slowness can persist even after dynamic objects move to canvas because Safari still composites SVG OSM tiles, CSS filters, blend overlays, backdrop filters, and high-DPR canvas redraws. Touch 2D maps now use a rendering budget: lower OSM tile zoom, no tile/backdrop filters, lower canvas DPR, coarser trails, and RAF-batched drag center updates.
 
 - 2026-04-26: When stacking feature branches before develop merges, do not assume prior PR UI exists on new branches. Tracked Objects bulk visibility controls must stay in the Tracking Scope tab, with a two-row toolbar (`모두 보이기`/`모두 숨기기`, then Catalog/Fleet links) so sidebar buttons do not crowd object cards.
+
+- 2026-04-26 correction: Do not globally coarsen 2D trail samples just because the device is touch-capable. If visible tracked objects drop below the touch canvas threshold, the SVG renderer needs the original 2-minute trail samples; otherwise ground tracks look visibly wrong. Keep coarser samples limited to dense/canvas/data-saver paths.
