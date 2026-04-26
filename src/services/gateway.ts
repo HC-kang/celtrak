@@ -22,6 +22,7 @@ export interface ConjunctionQuery {
 
 export interface OrbitLabGateway {
   getCatalog(query?: CatalogQuery): Promise<CatalogEntry[]>;
+  getCatalogStrict(query?: CatalogQuery, options?: { timeoutMs?: number }): Promise<CatalogEntry[]>;
   getWeather(): Promise<SpaceWeatherSnapshot>;
   getConjunctions(query?: ConjunctionQuery): Promise<ConjunctionRecord[]>;
   getDecayPredictions(): Promise<DecayPrediction[]>;
@@ -29,11 +30,47 @@ export interface OrbitLabGateway {
   getAlerts(): Promise<DashboardAlert[]>;
 }
 
+async function fetchJson<T>(input: string, options: { timeoutMs?: number } = {}): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), options.timeoutMs ?? 20_000);
+  try {
+    const response = await fetch(input, { signal: controller.signal });
+    const text = await response.text();
+    const data = text ? parseJsonBody<unknown>(input, text) : null;
+    if (!response.ok) {
+      const detail = responseErrorDetail(data);
+      throw new Error(detail ? `${input} returned ${response.status}: ${detail}` : `${input} returned ${response.status}`);
+    }
+    return data as T;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error(`${input} timed out`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function parseJsonBody<T>(input: string, text: string): T {
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    throw new Error(`${input} returned invalid JSON`, { cause: error });
+  }
+}
+
+function responseErrorDetail(data: unknown) {
+  if (!data || typeof data !== 'object') return '';
+  const record = data as Record<string, unknown>;
+  const detail = typeof record.detail === 'string' ? record.detail : '';
+  const error = typeof record.error === 'string' ? record.error : '';
+  return detail || error;
+}
+
 async function safeFetchJson<T>(input: string): Promise<T | null> {
   try {
-    const response = await fetch(input);
-    if (!response.ok) return null;
-    return (await response.json()) as T;
+    return await fetchJson<T>(input);
   } catch {
     return null;
   }
@@ -45,6 +82,15 @@ export function createGateway(): OrbitLabGateway {
       const endpoint = createCatalogEndpoint(query);
       const remote = await safeFetchJson<CatalogEntry[]>(endpoint);
       const data = remote ?? mockCatalog;
+      if (query?.catalogNumbers?.length) {
+        const catalogNumbers = new Set(query.catalogNumbers);
+        return data.filter((entry) => catalogNumbers.has(entry.satcat.catalogNumber));
+      }
+      return query?.group ? data.filter((entry) => entry.group.toLowerCase() === query.group?.toLowerCase()) : data;
+    },
+    async getCatalogStrict(query, options) {
+      const endpoint = createCatalogEndpoint(query);
+      const data = await fetchJson<CatalogEntry[]>(endpoint, options);
       if (query?.catalogNumbers?.length) {
         const catalogNumbers = new Set(query.catalogNumbers);
         return data.filter((entry) => catalogNumbers.has(entry.satcat.catalogNumber));

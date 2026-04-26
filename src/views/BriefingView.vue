@@ -37,10 +37,22 @@ const cdmError = ref('');
 const contactPrecisionResults = ref<Record<string, ContactPrecisionResult>>({});
 const contactPrecisionPendingKeys = ref<Set<string>>(new Set());
 const addingConjunctionCatalogNumbers = ref<Set<number>>(new Set());
+const cdmFeedbackToasts = ref<CdmFeedbackToast[]>([]);
+const cdmFeedbackDismissTimers = new Map<string, number>();
 let orbitClockTimer: number | null = null;
 let contactPrecisionWorker: Worker | null = null;
 let contactPrecisionRequestId = 0;
 usePassPredictions(focusedTarget);
+
+interface CdmFeedbackToast {
+  id: string;
+  catalogNumber: number;
+  name: string;
+  state: 'pending' | 'success' | 'error';
+  message: string;
+  detail?: string;
+  retryable?: boolean;
+}
 
 onMounted(() => {
   orbitClockTimer = window.setInterval(() => {
@@ -53,12 +65,18 @@ onUnmounted(() => {
     window.clearInterval(orbitClockTimer);
   }
   contactPrecisionWorker?.terminate();
+  for (const timer of cdmFeedbackDismissTimers.values()) {
+    window.clearTimeout(timer);
+  }
 });
 
 const visibleFleetEntries = computed<CatalogEntry[]>(() =>
   (store.selectedFleet?.memberRefs ?? [])
-    .filter((member) => !store.isFleetMemberHidden(member))
-    .map((member) => store.catalog.find((entry) => entry.satcat.catalogNumber === member.catalogNumber))
+    .filter((member) => member.refType === 'catalog' && !store.isFleetMemberHidden(member))
+    .map((member) => {
+      const entry = store.catalog.find((entry) => entry.satcat.catalogNumber === member.catalogNumber);
+      return entry ? catalogEntryWithDisplayName(entry, member) : null;
+    })
     .filter((entry): entry is CatalogEntry => Boolean(entry)),
 );
 
@@ -373,10 +391,16 @@ function anchorOrbitPlayback(orbitTimeIso: string) {
 function setPlaybackRate(rate: number) {
   const currentDisplayedMs = displayedOrbitTime.value.getTime();
   const wallNow = Date.now();
-  livePlaybackRate.value = rate;
+  livePlaybackRate.value = normalizePlaybackRate(rate);
   liveWallClockAnchor.value = wallNow;
   liveOrbitAnchor.value = Number.isFinite(currentDisplayedMs) ? currentDisplayedMs : wallNow;
   orbitClockTick.value = wallNow;
+}
+
+function normalizePlaybackRate(rate: number) {
+  const direction = rate < 0 ? -1 : 1;
+  const magnitude = Math.min(Math.max(Math.round(Math.abs(rate)), 1), 300);
+  return direction * magnitude;
 }
 
 function toggleMapControls() {
@@ -410,6 +434,10 @@ function conjunctionObjectTarget(item: ConjunctionRecord['primary']) {
   return item.catalogNumber ? satelliteFocusTarget(`catalog:${item.catalogNumber}`) : null;
 }
 
+function isUnresolvedConjunctionObject(item: ConjunctionRecord['primary']) {
+  return Boolean(item.catalogNumber && item.name.trim().toUpperCase() === 'UNKNOWN');
+}
+
 function isConjunctionObjectTracked(item: ConjunctionRecord['primary']) {
   return Boolean(item.catalogNumber && store.selectedFleetCatalogNumbers.includes(item.catalogNumber));
 }
@@ -425,31 +453,130 @@ function conjunctionChipClasses(item: ConjunctionRecord['primary']) {
     'focus-inspector__chip--active': tracked && focusTargetMatches(focusedTarget.value, target),
     'focus-inspector__chip--preview':
       tracked && focusTargetMatches(hoveredTarget.value, target) && !focusTargetMatches(focusedTarget.value, target),
-    'focus-inspector__chip--addable': Boolean(item.catalogNumber && !tracked),
+    'focus-inspector__chip--addable': Boolean(target && !tracked && !isUnresolvedConjunctionObject(item)),
+    'focus-inspector__chip--unavailable': Boolean(target && !tracked && isUnresolvedConjunctionObject(item)),
     'focus-inspector__chip--loading': isAddingConjunctionObject(item),
   };
 }
 
 function conjunctionChipLabel(item: ConjunctionRecord['primary']) {
   if (!item.catalogNumber) return item.name;
+  if (isUnresolvedConjunctionObject(item)) return `${item.name} 추적 추가 불가`;
   return isConjunctionObjectTracked(item) ? item.name : `${item.name} 추적 추가`;
 }
 
 async function activateConjunctionObject(item: ConjunctionRecord['primary']) {
   const target = conjunctionObjectTarget(item);
   if (!target || !item.catalogNumber) return;
-  if (!isConjunctionObjectTracked(item)) {
-    addingConjunctionCatalogNumbers.value = new Set([...addingConjunctionCatalogNumbers.value, item.catalogNumber]);
-    try {
-      const added = await store.addCatalogNumberToFleet(item.catalogNumber);
-      if (!added) return;
-    } finally {
-      const next = new Set(addingConjunctionCatalogNumbers.value);
-      next.delete(item.catalogNumber);
-      addingConjunctionCatalogNumbers.value = next;
-    }
+  if (isConjunctionObjectTracked(item)) {
+    setFocusedTarget(target);
+    return;
   }
+  if (isUnresolvedConjunctionObject(item)) {
+    showCdmFeedback({
+      catalogNumber: item.catalogNumber,
+      name: item.name,
+      state: 'error',
+      message: `${item.name} 추적 추가를 할 수 없습니다.`,
+      detail: `SOCRATES CDM에는 위험 객체로 보고됐지만 CelesTrak catalog/TLE 식별자가 공개되지 않아 지도 추적에 추가할 수 없습니다.`,
+      retryable: false,
+    });
+    return;
+  }
+
+  showCdmFeedback({
+    catalogNumber: item.catalogNumber,
+    name: item.name,
+    state: 'pending',
+    message: `${item.name} 추적 추가를 요청했습니다.`,
+    detail: `NORAD ${item.catalogNumber} catalog/TLE 조회 중`,
+  });
+  addingConjunctionCatalogNumbers.value = new Set([...addingConjunctionCatalogNumbers.value, item.catalogNumber]);
+  let addedEntry: CatalogEntry | null = null;
+  try {
+    const added = await store.addCatalogNumberToFleet(item.catalogNumber);
+    if (!added) throw new Error('선택된 플릿을 찾을 수 없습니다.');
+    addedEntry = added;
+  } catch (error) {
+    showCdmFeedback({
+      catalogNumber: item.catalogNumber,
+      name: item.name,
+      state: 'error',
+      message: `${item.name} 추적 추가에 실패했습니다.`,
+      detail: cdmAddErrorDetail(error, item.catalogNumber),
+    });
+    return;
+  } finally {
+    const next = new Set(addingConjunctionCatalogNumbers.value);
+    next.delete(item.catalogNumber);
+    addingConjunctionCatalogNumbers.value = next;
+  }
+  if (!addedEntry) return;
   setFocusedTarget(target);
+  showCdmFeedback({
+    catalogNumber: item.catalogNumber,
+    name: item.name,
+    state: 'success',
+    message: `${addedEntry.satcat.objectName} 추적을 추가했습니다.`,
+    detail: `NORAD ${addedEntry.satcat.catalogNumber} · ${addedEntry.tle ? 'TLE 포함' : 'SATCAT만 수신'}`,
+  });
+}
+
+async function retryCdmFeedback(toast: CdmFeedbackToast) {
+  await activateConjunctionObject({ name: toast.name, catalogNumber: toast.catalogNumber });
+}
+
+function cdmFeedbackStateLabel(state: CdmFeedbackToast['state']) {
+  if (state === 'success') return '성공';
+  if (state === 'error') return '실패';
+  return '요청';
+}
+
+function cdmAddErrorDetail(error: unknown, catalogNumber: number) {
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('TLE/SATCAT을 찾지 못했습니다')) return message;
+  if (message.includes('timed out')) {
+    return `CelesTrak 응답 지연으로 NORAD ${catalogNumber} 조회가 중단됐습니다. 잠시 후 재시도하세요.`;
+  }
+  if (message.includes('returned 502') || message.includes('API upstream failed')) {
+    return `CelesTrak upstream 조회가 실패했습니다. 잠시 후 재시도하세요.`;
+  }
+  return message || 'catalog/TLE 조회 중 알 수 없는 오류가 발생했습니다.';
+}
+
+function showCdmFeedback(input: Omit<CdmFeedbackToast, 'id'>) {
+  const toast: CdmFeedbackToast = {
+    ...input,
+    id: cdmFeedbackToastId(input.catalogNumber),
+  };
+  const existingTimer = cdmFeedbackDismissTimers.get(toast.id);
+  if (existingTimer) {
+    window.clearTimeout(existingTimer);
+    cdmFeedbackDismissTimers.delete(toast.id);
+  }
+  const index = cdmFeedbackToasts.value.findIndex((item) => item.id === toast.id);
+  if (index >= 0) {
+    cdmFeedbackToasts.value = cdmFeedbackToasts.value.map((item) => (item.id === toast.id ? toast : item));
+  } else {
+    cdmFeedbackToasts.value = [toast, ...cdmFeedbackToasts.value].slice(0, 3);
+  }
+  if (toast.state !== 'pending') {
+    const timer = window.setTimeout(() => dismissCdmFeedback(toast.id), toast.state === 'success' ? 7000 : 12_000);
+    cdmFeedbackDismissTimers.set(toast.id, timer);
+  }
+}
+
+function dismissCdmFeedback(id: string) {
+  const timer = cdmFeedbackDismissTimers.get(id);
+  if (timer) {
+    window.clearTimeout(timer);
+    cdmFeedbackDismissTimers.delete(id);
+  }
+  cdmFeedbackToasts.value = cdmFeedbackToasts.value.filter((toast) => toast.id !== id);
+}
+
+function cdmFeedbackToastId(catalogNumber: number) {
+  return `cdm-add-${catalogNumber}`;
 }
 
 function setHoveredTarget(target: MapFocusTarget | null) {
@@ -543,6 +670,19 @@ function cloneFleetMemberRef(refItem: FleetMemberRef): FleetMemberRef {
     customTleId: refItem.customTleId,
     displayName: refItem.displayName,
     tags: [...refItem.tags],
+  };
+}
+
+function catalogEntryWithDisplayName(entry: CatalogEntry, member: FleetMemberRef): CatalogEntry {
+  const displayName = member.displayName?.trim();
+  if (!displayName || displayName === entry.satcat.objectName) return entry;
+  return {
+    ...entry,
+    satcat: {
+      ...entry.satcat,
+      objectName: displayName,
+    },
+    tle: entry.tle ? { ...entry.tle, line0: displayName } : entry.tle,
   };
 }
 
@@ -725,6 +865,39 @@ watch(
 
 <template>
   <div class="briefing-page" :class="{ 'briefing-page--map-focus': isMobileViewport && mapFocusMode }">
+    <Teleport to="body">
+      <div v-if="cdmFeedbackToasts.length" class="app-toast-region" role="status" aria-live="polite" aria-atomic="false">
+        <article
+          v-for="toast in cdmFeedbackToasts"
+          :key="toast.id"
+          class="app-toast"
+          :class="`app-toast--${toast.state}`"
+        >
+          <span class="app-toast__status">{{ cdmFeedbackStateLabel(toast.state) }}</span>
+          <div class="app-toast__copy">
+            <strong>{{ toast.message }}</strong>
+            <p v-if="toast.detail">{{ toast.detail }}</p>
+          </div>
+          <button
+            v-if="toast.state === 'error' && toast.retryable !== false"
+            class="app-toast__action"
+            type="button"
+            @click="retryCdmFeedback(toast)"
+          >
+            재시도
+          </button>
+          <button
+            class="app-toast__close"
+            type="button"
+            aria-label="알림 닫기"
+            @click="dismissCdmFeedback(toast.id)"
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+        </article>
+      </div>
+    </Teleport>
+
     <section class="war-room">
       <div class="war-room__header">
         <div>

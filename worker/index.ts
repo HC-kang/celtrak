@@ -53,7 +53,7 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v4';
+const API_CACHE_VERSION = 'v7';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
 const MAX_CATALOG_NUMBER_LOOKUP = 100;
@@ -65,7 +65,16 @@ const DEFAULT_CATALOG_CACHE_TTL_SECONDS = 9_000;
 const CATALOG_ORIGIN_REFRESH_SECONDS = 7_200;
 const TLE_FETCH_TIMEOUT_MS = 20_000;
 const SATCAT_FETCH_TIMEOUT_MS = 20_000;
+const CATNR_TLE_FETCH_TIMEOUT_MS = 6_000;
+const CATNR_SATCAT_FETCH_TIMEOUT_MS = 3_000;
 const SOCRATES_FETCH_TIMEOUT_MS = 30_000;
+
+class CatalogLookupMissError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CatalogLookupMissError';
+  }
+}
 
 interface CelestrakSatcatRecord {
   OBJECT_NAME?: string;
@@ -318,24 +327,15 @@ async function getCatalog(url: URL): Promise<CatalogEntry[]> {
 
 async function getCatalogByCatalogNumbers(catalogNumbers: number[]): Promise<CatalogEntry[]> {
   const fetchedAt = new Date().toISOString();
-  const satcatResults = await Promise.allSettled(catalogNumbers.map((catalogNumber) => fetchSatcatRecord(catalogNumber)));
-  const satcatByCatalog = new Map<number, CelestrakSatcatRecord>();
-  for (const result of satcatResults) {
-    if (result.status !== 'fulfilled') continue;
-    const catalogNumber = Number(result.value.NORAD_CAT_ID);
-    if (Number.isFinite(catalogNumber)) {
-      satcatByCatalog.set(catalogNumber, result.value);
-    }
-  }
-
-  const tleResults = await Promise.allSettled(
-    catalogNumbers.map((catalogNumber) =>
-      fetchTleByCatalogNumber(catalogNumber).then((tle) => parseTleCatalog(tle, 'Tracked', fetchedAt, satcatByCatalog)),
-    ),
+  const lookupResults = await Promise.allSettled(
+    catalogNumbers.map((catalogNumber) => lookupCatalogNumber(catalogNumber, fetchedAt)),
   );
-  const entries = tleResults.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+
+  const entries = lookupResults.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+  const hasCompletedLookup = lookupResults.some((result) => result.status === 'fulfilled');
   if (!entries.length) {
-    const failures = tleResults
+    if (hasCompletedLookup) return [];
+    const failures = lookupResults
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
       .map((result) => (result.reason instanceof Error ? result.reason.message : 'unknown'))
       .join('; ');
@@ -344,18 +344,77 @@ async function getCatalogByCatalogNumbers(catalogNumbers: number[]): Promise<Cat
   return dedupeCatalog(entries);
 }
 
-async function fetchTleGroup(group: string) {
-  const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${encodeURIComponent(group)}&FORMAT=tle`;
-  const response = await fetchWithTimeout(url, TLE_FETCH_TIMEOUT_MS);
-  if (!response.ok) throw new Error(`CelesTrak ${group} ${response.status}`);
-  return response.text();
+async function lookupCatalogNumber(catalogNumber: number, fetchedAt: string): Promise<CatalogEntry[]> {
+  const tleResult = await settlePromise(fetchTleByCatalogNumber(catalogNumber, CATNR_TLE_FETCH_TIMEOUT_MS));
+  let tleMiss = tleResult.status === 'rejected' && isCatalogLookupMissError(tleResult.reason);
+
+  if (tleResult.status === 'fulfilled') {
+    const parsed = parseTleCatalog(tleResult.value, 'Tracked', fetchedAt);
+    if (parsed.length) return parsed;
+    tleMiss = true;
+  }
+
+  const satcatResult = await settlePromise(fetchSatcatRecord(catalogNumber, CATNR_SATCAT_FETCH_TIMEOUT_MS));
+  const satcatOnly = satcatResult.status === 'fulfilled' ? catalogEntryFromSatcat(satcatResult.value, fetchedAt) : null;
+  if (satcatOnly) return [satcatOnly];
+  const satcatMiss = satcatResult.status === 'rejected' && isCatalogLookupMissError(satcatResult.reason);
+  if (tleMiss && satcatMiss) return [];
+
+  const tleError = tleResult.status === 'rejected' && tleResult.reason instanceof Error ? tleResult.reason.message : 'no TLE rows';
+  const satcatError = satcatResult.status === 'rejected' && satcatResult.reason instanceof Error ? satcatResult.reason.message : 'no SATCAT row';
+  throw new Error(`CATNR=${catalogNumber}: ${tleError}; ${satcatError}`);
 }
 
-async function fetchTleByCatalogNumber(catalogNumber: number) {
+function isCatalogLookupMissError(error: unknown) {
+  return error instanceof CatalogLookupMissError;
+}
+
+function settlePromise<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
+  return promise.then(
+    (value) => ({ status: 'fulfilled', value }),
+    (reason) => ({ status: 'rejected', reason }),
+  );
+}
+
+function catalogEntryFromSatcat(record: CelestrakSatcatRecord, fetchedAt: string): CatalogEntry | null {
+  const catalogNumber = Number(record.NORAD_CAT_ID);
+  if (!Number.isFinite(catalogNumber)) return null;
+  return {
+    origin: 'OSINT',
+    fetchedAt,
+    group: 'SATCAT',
+    satcat: {
+      catalogNumber,
+      objectId: cleanString(record.OBJECT_ID) ?? '',
+      objectName: cleanString(record.OBJECT_NAME) ?? `NORAD ${catalogNumber}`,
+      objectType: normalizeObjectType(record.OBJECT_TYPE),
+      opsStatusCode: normalizeOpsStatus(record.OPS_STATUS_CODE),
+      ownerCountry: cleanString(record.OWNER) ?? 'UNKNOWN',
+      launchDate: cleanString(record.LAUNCH_DATE),
+      inclinationDeg: numberFromUnknown(record.INCLINATION),
+      apogeeKm: numberFromUnknown(record.APOGEE),
+      perigeeKm: numberFromUnknown(record.PERIGEE),
+      periodMinutes: numberFromUnknown(record.PERIOD),
+      fetchedAt,
+    },
+  };
+}
+
+async function fetchTleGroup(group: string) {
+  const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${encodeURIComponent(group)}&FORMAT=tle`;
+  const { response, text } = await fetchTextWithTimeout(url, TLE_FETCH_TIMEOUT_MS);
+  if (!response.ok) throw new Error(`CelesTrak ${group} ${response.status}`);
+  return text;
+}
+
+async function fetchTleByCatalogNumber(catalogNumber: number, timeoutMs = TLE_FETCH_TIMEOUT_MS) {
   const url = `https://celestrak.org/NORAD/elements/gp.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=tle`;
-  const response = await fetchWithTimeout(url, TLE_FETCH_TIMEOUT_MS);
+  const { response, text } = await fetchTextWithTimeout(url, timeoutMs);
   if (!response.ok) throw new Error(`CelesTrak CATNR=${catalogNumber} ${response.status}`);
-  return response.text();
+  if (!text.trim() || /No GP data found/i.test(text)) {
+    throw new CatalogLookupMissError(`CelesTrak CATNR=${catalogNumber} no TLE rows`);
+  }
+  return text;
 }
 
 async function fetchSatcatRecords(group: string) {
@@ -370,13 +429,16 @@ async function fetchSatcatRecords(group: string) {
   return records;
 }
 
-async function fetchSatcatRecord(catalogNumber: number) {
-  const rows = await fetchJson<CelestrakSatcatRecord[]>(
-    `https://celestrak.org/satcat/records.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=JSON`,
-    SATCAT_FETCH_TIMEOUT_MS,
-  );
+async function fetchSatcatRecord(catalogNumber: number, timeoutMs = SATCAT_FETCH_TIMEOUT_MS) {
+  const url = `https://celestrak.org/satcat/records.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=JSON`;
+  const { response, text } = await fetchTextWithTimeout(url, timeoutMs);
+  if (!response.ok) throw new Error(`CelesTrak SATCAT CATNR=${catalogNumber} ${response.status}`);
+  if (!text.trim() || /No SATCAT records found/i.test(text)) {
+    throw new CatalogLookupMissError(`CelesTrak SATCAT CATNR=${catalogNumber} empty`);
+  }
+  const rows = parseJsonResponse<CelestrakSatcatRecord[]>(url, text);
   const record = rows[0];
-  if (!record) throw new Error(`CelesTrak SATCAT CATNR=${catalogNumber} empty`);
+  if (!record) throw new CatalogLookupMissError(`CelesTrak SATCAT CATNR=${catalogNumber} empty`);
   return record;
 }
 
@@ -457,11 +519,11 @@ async function getConjunctions(url: URL): Promise<ConjunctionRecord[]> {
   const catalogNumbers = new Set(catalogNumbersFromUrl(url));
   const order = socratesOrderFromUrl(url);
   try {
-    const response = await fetchWithTimeout(socratesCsvUrl(order), SOCRATES_FETCH_TIMEOUT_MS);
+    const { response, text } = await fetchTextWithTimeout(socratesCsvUrl(order), SOCRATES_FETCH_TIMEOUT_MS);
     if (!response.ok) throw new Error(`SOCRATES ${order} ${response.status}`);
     const lastModified = response.headers.get('last-modified');
     const fetchedAt = lastModified ? new Date(lastModified).toISOString() : new Date().toISOString();
-    return parseSocratesCsv(await response.text(), {
+    return parseSocratesCsv(text, {
       catalogNumbers,
       fetchedAt,
       limit,
@@ -819,19 +881,32 @@ function createSpaceWeatherFallback() {
 }
 
 async function fetchJson<T>(url: string, timeoutMs = 8000): Promise<T> {
-  const response = await fetchWithTimeout(url, timeoutMs);
+  const { response, text } = await fetchTextWithTimeout(url, timeoutMs);
   if (!response.ok) throw new Error(`${url} ${response.status}`);
-  return response.json() as Promise<T>;
+  return parseJsonResponse<T>(url, text);
 }
 
-async function fetchWithTimeout(url: string, timeoutMs: number) {
+function parseJsonResponse<T>(url: string, text: string): T {
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    const detail = text.trim().slice(0, 120) || 'empty response';
+    throw new Error(`${url} invalid JSON: ${detail}`, { cause: error });
+  }
+}
+
+async function fetchTextWithTimeout(url: string, timeoutMs: number) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, {
-      signal: controller.signal,
-      headers: { 'user-agent': 'celestrak-orbit-lab-pro/0.1' },
-    });
+    const response = await fetch(url, { signal: controller.signal });
+    const text = await response.text();
+    return { response, text };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`${url} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }

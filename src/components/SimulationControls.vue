@@ -33,8 +33,10 @@ watch(
 
 const isLive = computed(() => !props.simulationTimeIso);
 const orbitTimestamp = computed(() => formatTimestampWithSeconds(props.orbitTimeIso));
+const isRewinding = computed(() => props.livePlaybackRate < 0);
+const playbackSpeed = computed(() => clampPlaybackSpeed(props.livePlaybackRate));
 const speedProgress = computed(
-  () => `${((props.livePlaybackRate - minPlaybackRate) / (maxPlaybackRate - minPlaybackRate)) * 100}%`,
+  () => `${((playbackSpeed.value - minPlaybackRate) / (maxPlaybackRate - minPlaybackRate)) * 100}%`,
 );
 
 function submitInput() {
@@ -89,9 +91,18 @@ function formatTimestampWithSeconds(iso: string) {
 
 function setPlaybackRateFromInput(event: Event) {
   const input = event.target as HTMLInputElement;
-  const nextRate = Math.round(Number(input.value));
-  if (!Number.isFinite(nextRate)) return;
-  emit('set-playback-rate', Math.min(Math.max(nextRate, minPlaybackRate), maxPlaybackRate));
+  const nextRate = clampPlaybackSpeed(input.value);
+  emit('set-playback-rate', isRewinding.value ? -nextRate : nextRate);
+}
+
+function togglePlaybackDirection() {
+  emit('set-playback-rate', isRewinding.value ? playbackSpeed.value : -playbackSpeed.value);
+}
+
+function clampPlaybackSpeed(value: unknown) {
+  const numericValue = Math.round(Math.abs(Number(value)));
+  if (!Number.isFinite(numericValue)) return minPlaybackRate;
+  return Math.min(Math.max(numericValue, minPlaybackRate), maxPlaybackRate);
 }
 </script>
 
@@ -99,7 +110,7 @@ function setPlaybackRateFromInput(event: Event) {
   <div class="simulation-controls">
     <div class="simulation-controls__summary">
       <strong>{{ isLive ? 'Live orbit' : 'Simulation orbit' }}</strong>
-      <small>{{ orbitTimestamp }} · {{ livePlaybackRate }}x</small>
+      <small>{{ orbitTimestamp }} · {{ isRewinding ? '-' : '' }}{{ playbackSpeed }}x</small>
     </div>
     <div class="simulation-controls__row">
       <span class="simulation-controls__label">Orbit time</span>
@@ -128,18 +139,29 @@ function setPlaybackRateFromInput(event: Event) {
     <div class="simulation-controls__row">
       <span class="simulation-controls__label">Speed</span>
       <div class="simulation-controls__speed" aria-label="Playback speed">
+        <button
+          class="simulation-controls__rewind"
+          :class="{ 'simulation-controls__rewind--active': isRewinding }"
+          type="button"
+          :aria-pressed="isRewinding"
+          aria-label="재생 방향"
+          :title="isRewinding ? '되감기' : '정방향'"
+          @click.prevent="togglePlaybackDirection"
+        >
+          <span class="simulation-controls__rewind-icon" aria-hidden="true"></span>
+        </button>
         <input
           class="simulation-controls__speed-slider"
           type="range"
           :min="minPlaybackRate"
           :max="maxPlaybackRate"
           step="1"
-          :value="livePlaybackRate"
+          :value="playbackSpeed"
           :style="{ '--speed-progress': speedProgress }"
           aria-label="Playback speed"
           @input="setPlaybackRateFromInput"
         />
-        <output class="simulation-controls__speed-output">{{ livePlaybackRate }}x</output>
+        <output class="simulation-controls__speed-output">{{ isRewinding ? '-' : '' }}{{ playbackSpeed }}x</output>
         <div class="simulation-controls__speed-scale" aria-hidden="true">
           <span>{{ minPlaybackRate }}x</span>
           <span>{{ maxPlaybackRate }}x</span>

@@ -97,4 +97,21 @@ describe('SimulationControls', () => {
     await wrapper.find('input[type="range"]').setValue('300');
     expect(wrapper.text()).toContain('300x');
   });
+
+  it('toggles playback direction without changing speed magnitude', async () => {
+    const wrapper = mount(SimulationControls, {
+      props: {
+        livePlaybackRate: 20,
+        orbitTimeIso: '2026-04-24T05:00:00.000Z',
+        simulationTimeIso: null,
+      },
+    });
+
+    await wrapper.get('button[aria-label="재생 방향"]').trigger('click');
+    await wrapper.setProps({ livePlaybackRate: -20 });
+    await wrapper.find('input[type="range"]').setValue('30');
+    await wrapper.get('button[aria-label="재생 방향"]').trigger('click');
+
+    expect(wrapper.emitted('set-playback-rate')).toEqual([[-20], [-30], [20]]);
+  });
 });

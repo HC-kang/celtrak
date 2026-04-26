@@ -29,6 +29,15 @@ const gateway = createGateway();
 const fleetStore = createFleetStore();
 type NavigatorWithConnection = Navigator & { connection?: { saveData?: boolean } };
 
+const LEGACY_CATALOG_REWRITES = [
+  {
+    fromCatalogNumber: 37849,
+    fromDisplayName: 'NOAA 19',
+    toCatalogNumber: 33591,
+    toDisplayName: 'NOAA 19',
+  },
+] as const;
+
 export const useAppStore = defineStore('app', () => {
   const catalog = ref<CatalogEntry[]>([]);
   const fleets = ref<UserFleet[]>([]);
@@ -185,6 +194,8 @@ export const useAppStore = defineStore('app', () => {
         events.value = await fleetStore.listEvents(nowIso(), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString());
       }
 
+      await repairLegacyCatalogRefs();
+
       selectedFleetId.value = preferredFleetId(fleets.value, preferences.value.selectedFleetId);
       if (selectedFleetId.value && preferences.value.selectedFleetId !== selectedFleetId.value) {
         updatePreferences({ selectedFleetId: selectedFleetId.value });
@@ -243,6 +254,38 @@ export const useAppStore = defineStore('app', () => {
     return gateway.getConjunctions(query);
   }
 
+  async function repairLegacyCatalogRefs() {
+    const repairedFleetIds = new Set<string>();
+    for (const fleet of fleets.value) {
+      const rewrite = rewriteLegacyFleetMemberRefs(fleet.memberRefs);
+      if (!rewrite.changed) continue;
+      repairedFleetIds.add(fleet.id);
+      await fleetStore.upsertFleet({
+        ...fleet,
+        memberRefs: rewrite.memberRefs,
+        updatedAt: nowIso(),
+      });
+    }
+    if (repairedFleetIds.size) {
+      fleets.value = await fleetStore.listFleets();
+      const hiddenTrackedRefs = rewriteLegacyHiddenTrackedRefs(preferences.value.hiddenTrackedRefs ?? [], repairedFleetIds);
+      if (hiddenTrackedRefs.changed) {
+        updatePreferences({ hiddenTrackedRefs: hiddenTrackedRefs.values });
+      }
+    }
+
+    let eventsChanged = false;
+    for (const event of events.value) {
+      const rewrittenSatelliteRef = event.satelliteRef ? rewriteLegacyFleetMemberRef(event.satelliteRef) : event.satelliteRef;
+      if (rewrittenSatelliteRef === event.satelliteRef) continue;
+      await fleetStore.upsertEvent({ ...event, satelliteRef: rewrittenSatelliteRef });
+      eventsChanged = true;
+    }
+    if (eventsChanged) {
+      events.value = await fleetStore.listEvents(nowIso(), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString());
+    }
+  }
+
   function mergeCatalogEntries(entries: CatalogEntry[]) {
     if (!entries.length) return;
     const byCatalogNumber = new Map(catalog.value.map((entry) => [entry.satcat.catalogNumber, entry]));
@@ -279,8 +322,8 @@ export const useAppStore = defineStore('app', () => {
     if (existing) {
       return addCatalogToFleet(existing, fleetId);
     }
-    const [entry] = await gateway.getCatalog({ catalogNumbers: [catalogNumber] });
-    if (!entry) return null;
+    const [entry] = await gateway.getCatalogStrict({ catalogNumbers: [catalogNumber] }, { timeoutMs: 15_000 });
+    if (!entry) throw new Error(`CelesTrak에서 NORAD ${catalogNumber}의 TLE/SATCAT을 찾지 못했습니다.`);
     return addCatalogToFleet(entry, fleetId);
   }
 
@@ -605,7 +648,7 @@ function createSeedFleet(): UserFleet {
     description: '초기 운영 플릿',
     memberRefs: [
       { refType: 'catalog', catalogNumber: 25544, displayName: 'ISS', tags: ['crew'] },
-      { refType: 'catalog', catalogNumber: 37849, displayName: 'NOAA 19', tags: ['weather'] },
+      { refType: 'catalog', catalogNumber: 33591, displayName: 'NOAA 19', tags: ['weather'] },
       { refType: 'catalog', catalogNumber: 24876, displayName: 'GPS BIIR-2', tags: ['nav'] },
     ],
     createdAt: nowIso(),
@@ -616,6 +659,79 @@ function createSeedFleet(): UserFleet {
 
 function stringifyRef(refItem: FleetMemberRef) {
   return refItem.refType === 'catalog' ? `catalog:${refItem.catalogNumber}` : `custom:${refItem.customTleId}`;
+}
+
+function rewriteLegacyFleetMemberRefs(memberRefs: FleetMemberRef[]) {
+  let changed = false;
+  const next: FleetMemberRef[] = [];
+  const seen = new Map<string, FleetMemberRef>();
+
+  for (const member of memberRefs) {
+    const rewritten = rewriteLegacyFleetMemberRef(member);
+    changed ||= rewritten !== member;
+    const key = stringifyRef(rewritten);
+    const existing = seen.get(key);
+    if (!existing) {
+      seen.set(key, rewritten);
+      next.push(rewritten);
+      continue;
+    }
+
+    const merged = mergeFleetMemberRefs(existing, rewritten);
+    seen.set(key, merged);
+    next[next.findIndex((item) => stringifyRef(item) === key)] = merged;
+    changed = true;
+  }
+
+  return { memberRefs: next, changed };
+}
+
+function rewriteLegacyFleetMemberRef(member: FleetMemberRef): FleetMemberRef {
+  const rewrite = legacyCatalogRewriteFor(member);
+  if (!rewrite) return member;
+  return {
+    ...member,
+    catalogNumber: rewrite.toCatalogNumber,
+    displayName: rewrite.toDisplayName,
+    tags: [...member.tags],
+  };
+}
+
+function legacyCatalogRewriteFor(member: FleetMemberRef) {
+  if (member.refType !== 'catalog') return null;
+  return (
+    LEGACY_CATALOG_REWRITES.find(
+      (rewrite) =>
+        member.catalogNumber === rewrite.fromCatalogNumber &&
+        normalizeDisplayName(member.displayName) === normalizeDisplayName(rewrite.fromDisplayName),
+    ) ?? null
+  );
+}
+
+function mergeFleetMemberRefs(left: FleetMemberRef, right: FleetMemberRef): FleetMemberRef {
+  return {
+    ...left,
+    displayName: left.displayName ?? right.displayName,
+    tags: [...new Set([...left.tags, ...right.tags])],
+  };
+}
+
+function rewriteLegacyHiddenTrackedRefs(hiddenRefs: string[], repairedFleetIds: Set<string>) {
+  let changed = false;
+  const values = hiddenRefs.map((key) => {
+    const match = /^(.*):catalog:(\d+)$/.exec(key);
+    if (!match || !repairedFleetIds.has(match[1])) return key;
+    const catalogNumber = Number(match[2]);
+    const rewrite = LEGACY_CATALOG_REWRITES.find((item) => item.fromCatalogNumber === catalogNumber);
+    if (!rewrite) return key;
+    changed = true;
+    return `${match[1]}:catalog:${rewrite.toCatalogNumber}`;
+  });
+  return { values: [...new Set(values)], changed };
+}
+
+function normalizeDisplayName(value?: string) {
+  return (value ?? '').trim().toUpperCase();
 }
 
 function matchesRef(left: FleetMemberRef, right: FleetMemberRef) {
@@ -670,7 +786,7 @@ function createSeedEvents(): ScheduledEvent[] {
     },
     {
       id: crypto.randomUUID(),
-      satelliteRef: { refType: 'catalog', catalogNumber: 37849, displayName: 'NOAA 19', tags: ['weather'] },
+      satelliteRef: { refType: 'catalog', catalogNumber: 33591, displayName: 'NOAA 19', tags: ['weather'] },
       startAt: new Date(base + 16 * 60 * 60 * 1000).toISOString(),
       endAt: new Date(base + 18 * 60 * 60 * 1000).toISOString(),
       kind: 'SW_UPDATE',

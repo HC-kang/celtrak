@@ -36,7 +36,7 @@ describe('InMemoryFleetStore', () => {
     });
     await store.appendOpsStatus({
       id: 'status-2',
-      satelliteRef: { refType: 'catalog', catalogNumber: 37849, tags: [] },
+      satelliteRef: { refType: 'catalog', catalogNumber: 33591, tags: [] },
       recordedAt: '2026-04-23T01:00:00.000Z',
       mcStatus: 'PMC',
       rfStatus: 'DEGRADED',

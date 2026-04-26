@@ -27,6 +27,7 @@ const emit = defineEmits<{
 const container = ref<HTMLDivElement | null>(null);
 const isInteracting = ref(false);
 const autoRotate = ref(true);
+const satelliteFollowSuspended = ref(false);
 const playbackRate = computed(() => props.livePlaybackRate ?? 1);
 
 const SATELLITE_STATE_COLORS = {
@@ -1126,11 +1127,13 @@ function handlePointerMove(event: PointerEvent) {
 
   if (pinchState && activePointers.size >= 2) {
     event.preventDefault();
+    suspendFocusedSatelliteFollow();
     updatePinch();
     return;
   }
 
   if (!pointerStart || !earthRig) return;
+  suspendFocusedSatelliteFollow();
   const deltaX = (event.clientX - pointerStart.x) / 180;
   const deltaY = (event.clientY - pointerStart.y) / 180;
   setGlobeRotation({
@@ -1165,17 +1168,20 @@ function handlePointerUp(event: PointerEvent) {
 
 function handleWheel(event: WheelEvent) {
   event.preventDefault();
+  suspendFocusedSatelliteFollow();
   targetCameraDistance = THREE.MathUtils.clamp(targetCameraDistance + event.deltaY * 0.004, 3.45, 8.2);
 }
 
 function toggleAutoRotate() {
   cancelGlobeFocusAnimation();
+  suspendFocusedSatelliteFollow();
   autoRotate.value = !autoRotate.value;
 }
 
 function beginPinch() {
   const [first, second] = Array.from(activePointers.values());
   if (!first || !second) return;
+  suspendFocusedSatelliteFollow();
   pointerStart = null;
   isInteracting.value = true;
   pinchState = {
@@ -1227,12 +1233,19 @@ function focusGlobeOnTarget(target: MapFocusTarget | null | undefined) {
 
 function followFocusedSatellite() {
   if (props.focusedTarget?.type !== 'satellite' || isInteracting.value) return;
+  if (satelliteFollowSuspended.value) return;
   const targetVector = findSatelliteVector(props.focusedTarget.id);
   if (!targetVector) return;
   cancelGlobeFocusAnimation();
   setGlobeRotation(rotationForFocusTarget(targetVector));
   autoRotate.value = false;
   targetCameraDistance = Math.min(targetCameraDistance, 4.85);
+}
+
+function suspendFocusedSatelliteFollow() {
+  if (props.focusedTarget?.type === 'satellite') {
+    satelliteFollowSuspended.value = true;
+  }
 }
 
 function rotationForFocusTarget(targetVector: THREE.Vector3) {
@@ -1506,6 +1519,7 @@ watch(
 watch(
   () => props.focusedTarget,
   (target) => {
+    satelliteFollowSuspended.value = false;
     updateSatellites();
     updateGroundStations();
     updateContactLinks();

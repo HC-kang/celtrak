@@ -60,6 +60,7 @@ const zoom = ref(1);
 const center = ref({ x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 });
 const dragging = ref(false);
 const userMovedMap = ref(false);
+const satelliteFollowSuspended = ref(false);
 let resizeObserver: ResizeObserver | null = null;
 let dragState: DragState | null = null;
 let pinchState: PinchState | null = null;
@@ -285,16 +286,19 @@ function radiansToDegrees(value: number) {
 
 function zoomIn() {
   cancelFocusAnimation();
+  suspendFocusedSatelliteFollow();
   setZoom(zoom.value * 1.28);
 }
 
 function zoomOut() {
   cancelFocusAnimation();
+  suspendFocusedSatelliteFollow();
   setZoom(zoom.value / 1.28);
 }
 
 function resetMapView() {
   cancelFocusAnimation();
+  suspendFocusedSatelliteFollow();
   userMovedMap.value = false;
   zoom.value = coverZoom.value;
   center.value = { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 };
@@ -304,6 +308,7 @@ function resetMapView() {
 function onWheel(event: WheelEvent) {
   event.preventDefault();
   cancelFocusAnimation();
+  suspendFocusedSatelliteFollow();
   userMovedMap.value = true;
   if (event.shiftKey || event.altKey) {
     const view = currentView.value;
@@ -349,11 +354,13 @@ function onPointerMove(event: PointerEvent) {
   }
 
   if (pinchState && activePointers.size >= 2) {
+    suspendFocusedSatelliteFollow();
     updatePinch();
     return;
   }
 
   if (!dragState || dragState.pointerId !== event.pointerId) return;
+  suspendFocusedSatelliteFollow();
   const dx = ((event.clientX - dragState.startClientX) / viewportSize.value.width) * dragState.viewWidth;
   const dy = ((event.clientY - dragState.startClientY) / viewportSize.value.height) * dragState.viewHeight;
   center.value = clampCenter(dragState.startCenterX - dx, dragState.startCenterY - dy, zoom.value);
@@ -430,6 +437,7 @@ function beginDrag(pointerId: number, clientX: number, clientY: number) {
 function beginPinch() {
   const [first, second] = Array.from(activePointers.values());
   if (!first || !second) return;
+  suspendFocusedSatelliteFollow();
   dragging.value = false;
   dragState = null;
   pinchState = {
@@ -728,12 +736,19 @@ function centerMapOnTarget(
 
 function followFocusedSatellite() {
   if (props.focusedTarget?.type !== 'satellite') return;
+  if (satelliteFollowSuspended.value) return;
   if (dragging.value || pinchState) return;
   centerMapOnTarget(props.focusedTarget, {
     animate: false,
     enforceFocusZoom: false,
     markUserMoved: userMovedMap.value,
   });
+}
+
+function suspendFocusedSatelliteFollow() {
+  if (props.focusedTarget?.type === 'satellite') {
+    satelliteFollowSuspended.value = true;
+  }
 }
 
 function queueDynamicCanvasDraw() {
@@ -1189,7 +1204,10 @@ watch(
 
 watch(
   () => props.focusedTarget,
-  (target) => centerMapOnTarget(target),
+  (target) => {
+    satelliteFollowSuspended.value = false;
+    centerMapOnTarget(target);
+  },
   { deep: true },
 );
 
