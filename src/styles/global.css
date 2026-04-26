@@ -1447,6 +1447,52 @@ button.focus-inspector__chip:disabled {
   gap: 10px;
 }
 
+.tracking-scope__toolbar {
+  display: grid;
+  gap: 8px;
+}
+
+.tracking-scope__toolbar-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tracking-scope__toolbar-row--primary {
+  padding: 7px;
+  border-radius: var(--radius-md);
+  background: rgba(83, 177, 255, 0.08);
+  border: 1px solid rgba(83, 177, 255, 0.14);
+}
+
+.tracking-scope__tool-button.button.panel-card__action-link,
+.tracking-scope__tool-button.button--ghost.panel-card__action-link {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 7px 10px;
+  gap: 7px;
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.tracking-scope__tool-button small {
+  display: inline-grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 999px;
+  color: #f8fafc;
+  background: rgba(0, 112, 204, 0.82);
+  font-size: 0.68rem;
+  line-height: 1;
+}
+
+.tracking-scope__tool-button:disabled small {
+  color: rgba(15, 23, 42, 0.48);
+  background: rgba(15, 23, 42, 0.08);
+}
+
 .tracking-scope__object-list {
   max-height: clamp(320px, 34vw, 440px);
   overflow: auto;
@@ -2699,6 +2745,11 @@ button.focus-inspector__chip:disabled {
   mix-blend-mode: screen;
 }
 
+.orbit-map--touch-budget::after {
+  opacity: 0.54;
+  mix-blend-mode: normal;
+}
+
 .orbit-map--2d svg,
 .orbit-map--3d canvas {
   position: absolute;
@@ -2923,6 +2974,20 @@ button.focus-inspector__chip:disabled {
   image-rendering: auto;
   opacity: 0.96;
   filter: grayscale(0.9) saturate(0.7) brightness(0.58) contrast(1.14);
+}
+
+.orbit-map--touch-budget .orbit-map__tile {
+  opacity: 0.62;
+  filter: none;
+}
+
+.orbit-map--touch-budget .orbit-map__nav,
+.orbit-map--touch-budget .orbit-map__clock,
+.orbit-map--touch-budget .orbit-map__hud--bottom,
+.orbit-map--touch-budget .orbit-map__interaction-hint,
+.orbit-map--touch-budget .orbit-map__attribution {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .orbit-map__interaction-hint {
