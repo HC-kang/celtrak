@@ -37,10 +37,21 @@ const cdmError = ref('');
 const contactPrecisionResults = ref<Record<string, ContactPrecisionResult>>({});
 const contactPrecisionPendingKeys = ref<Set<string>>(new Set());
 const addingConjunctionCatalogNumbers = ref<Set<number>>(new Set());
+const cdmFeedbackToasts = ref<CdmFeedbackToast[]>([]);
+const cdmFeedbackDismissTimers = new Map<string, number>();
 let orbitClockTimer: number | null = null;
 let contactPrecisionWorker: Worker | null = null;
 let contactPrecisionRequestId = 0;
 usePassPredictions(focusedTarget);
+
+interface CdmFeedbackToast {
+  id: string;
+  catalogNumber: number;
+  name: string;
+  state: 'pending' | 'success' | 'error';
+  message: string;
+  detail?: string;
+}
 
 onMounted(() => {
   orbitClockTimer = window.setInterval(() => {
@@ -53,6 +64,9 @@ onUnmounted(() => {
     window.clearInterval(orbitClockTimer);
   }
   contactPrecisionWorker?.terminate();
+  for (const timer of cdmFeedbackDismissTimers.values()) {
+    window.clearTimeout(timer);
+  }
 });
 
 const visibleFleetEntries = computed<CatalogEntry[]>(() =>
@@ -445,17 +459,84 @@ async function activateConjunctionObject(item: ConjunctionRecord['primary']) {
   const target = conjunctionObjectTarget(item);
   if (!target || !item.catalogNumber) return;
   if (!isConjunctionObjectTracked(item)) {
+    showCdmFeedback({
+      catalogNumber: item.catalogNumber,
+      name: item.name,
+      state: 'pending',
+      message: `${item.name} 추적 추가를 요청했습니다.`,
+      detail: `NORAD ${item.catalogNumber} catalog/TLE 조회 중`,
+    });
     addingConjunctionCatalogNumbers.value = new Set([...addingConjunctionCatalogNumbers.value, item.catalogNumber]);
+    let addedEntry: CatalogEntry | null = null;
     try {
       const added = await store.addCatalogNumberToFleet(item.catalogNumber);
-      if (!added) return;
+      if (!added) throw new Error('선택된 플릿을 찾을 수 없습니다.');
+      addedEntry = added;
+    } catch (error) {
+      showCdmFeedback({
+        catalogNumber: item.catalogNumber,
+        name: item.name,
+        state: 'error',
+        message: `${item.name} 추적 추가에 실패했습니다.`,
+        detail: error instanceof Error ? error.message : 'catalog/TLE 조회 중 알 수 없는 오류가 발생했습니다.',
+      });
+      return;
     } finally {
       const next = new Set(addingConjunctionCatalogNumbers.value);
       next.delete(item.catalogNumber);
       addingConjunctionCatalogNumbers.value = next;
     }
+    if (!addedEntry) return;
+    setFocusedTarget(target);
+    showCdmFeedback({
+      catalogNumber: item.catalogNumber,
+      name: item.name,
+      state: 'success',
+      message: `${addedEntry.satcat.objectName} 추적을 추가했습니다.`,
+      detail: `NORAD ${addedEntry.satcat.catalogNumber} · ${addedEntry.tle ? 'TLE 포함' : 'SATCAT만 수신'}`,
+    });
+    return;
   }
   setFocusedTarget(target);
+}
+
+async function retryCdmFeedback(toast: CdmFeedbackToast) {
+  await activateConjunctionObject({ name: toast.name, catalogNumber: toast.catalogNumber });
+}
+
+function showCdmFeedback(input: Omit<CdmFeedbackToast, 'id'>) {
+  const toast: CdmFeedbackToast = {
+    ...input,
+    id: cdmFeedbackToastId(input.catalogNumber),
+  };
+  const existingTimer = cdmFeedbackDismissTimers.get(toast.id);
+  if (existingTimer) {
+    window.clearTimeout(existingTimer);
+    cdmFeedbackDismissTimers.delete(toast.id);
+  }
+  const index = cdmFeedbackToasts.value.findIndex((item) => item.id === toast.id);
+  if (index >= 0) {
+    cdmFeedbackToasts.value = cdmFeedbackToasts.value.map((item) => (item.id === toast.id ? toast : item));
+  } else {
+    cdmFeedbackToasts.value = [toast, ...cdmFeedbackToasts.value].slice(0, 3);
+  }
+  if (toast.state !== 'pending') {
+    const timer = window.setTimeout(() => dismissCdmFeedback(toast.id), toast.state === 'success' ? 7000 : 12_000);
+    cdmFeedbackDismissTimers.set(toast.id, timer);
+  }
+}
+
+function dismissCdmFeedback(id: string) {
+  const timer = cdmFeedbackDismissTimers.get(id);
+  if (timer) {
+    window.clearTimeout(timer);
+    cdmFeedbackDismissTimers.delete(id);
+  }
+  cdmFeedbackToasts.value = cdmFeedbackToasts.value.filter((toast) => toast.id !== id);
+}
+
+function cdmFeedbackToastId(catalogNumber: number) {
+  return `cdm-add-${catalogNumber}`;
 }
 
 function setHoveredTarget(target: MapFocusTarget | null) {
@@ -866,6 +947,36 @@ watch(
             <div class="war-room__side-header">
               <p class="eyebrow">Focus Inspector</p>
               <button v-if="focusedTarget" class="button button--ghost panel-card__action-link" type="button" @click="clearFocusedTarget()">Clear</button>
+            </div>
+
+            <div v-if="cdmFeedbackToasts.length" class="focus-inspector__toasts" role="status" aria-live="polite">
+              <article
+                v-for="toast in cdmFeedbackToasts"
+                :key="toast.id"
+                class="focus-inspector__toast"
+                :class="`focus-inspector__toast--${toast.state}`"
+              >
+                <div>
+                  <strong>{{ toast.message }}</strong>
+                  <p v-if="toast.detail">{{ toast.detail }}</p>
+                </div>
+                <button
+                  v-if="toast.state === 'error'"
+                  class="focus-inspector__toast-action"
+                  type="button"
+                  @click="retryCdmFeedback(toast)"
+                >
+                  재시도
+                </button>
+                <button
+                  class="focus-inspector__toast-close"
+                  type="button"
+                  aria-label="알림 닫기"
+                  @click="dismissCdmFeedback(toast.id)"
+                >
+                  ×
+                </button>
+              </article>
             </div>
 
             <template v-if="focusedSatellite">

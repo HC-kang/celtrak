@@ -53,7 +53,7 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v5';
+const API_CACHE_VERSION = 'v6';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
 const MAX_CATALOG_NUMBER_LOOKUP = 100;
@@ -65,6 +65,9 @@ const DEFAULT_CATALOG_CACHE_TTL_SECONDS = 9_000;
 const CATALOG_ORIGIN_REFRESH_SECONDS = 7_200;
 const TLE_FETCH_TIMEOUT_MS = 20_000;
 const SATCAT_FETCH_TIMEOUT_MS = 20_000;
+const CATNR_TLE_FETCH_TIMEOUT_MS = 8_000;
+const CATNR_SATCAT_FETCH_TIMEOUT_MS = 4_000;
+const CATNR_SATCAT_ENRICHMENT_GRACE_MS = 1_200;
 const SOCRATES_FETCH_TIMEOUT_MS = 30_000;
 
 interface CelestrakSatcatRecord {
@@ -319,26 +322,7 @@ async function getCatalog(url: URL): Promise<CatalogEntry[]> {
 async function getCatalogByCatalogNumbers(catalogNumbers: number[]): Promise<CatalogEntry[]> {
   const fetchedAt = new Date().toISOString();
   const lookupResults = await Promise.allSettled(
-    catalogNumbers.map(async (catalogNumber) => {
-      const [satcatResult, tleResult] = await Promise.allSettled([fetchSatcatRecord(catalogNumber), fetchTleByCatalogNumber(catalogNumber)]);
-      const satcat = satcatResult.status === 'fulfilled' ? satcatResult.value : undefined;
-      if (tleResult.status === 'fulfilled') {
-        const satcatByCatalog = new Map<number, CelestrakSatcatRecord>();
-        if (satcat) {
-          const satcatCatalogNumber = Number(satcat.NORAD_CAT_ID);
-          if (Number.isFinite(satcatCatalogNumber)) {
-            satcatByCatalog.set(satcatCatalogNumber, satcat);
-          }
-        }
-        const parsed = parseTleCatalog(tleResult.value, 'Tracked', fetchedAt, satcatByCatalog);
-        if (parsed.length) return parsed;
-      }
-      const satcatOnly = satcat ? catalogEntryFromSatcat(satcat, fetchedAt) : null;
-      if (satcatOnly) return [satcatOnly];
-      const tleError = tleResult.status === 'rejected' && tleResult.reason instanceof Error ? tleResult.reason.message : 'no TLE rows';
-      const satcatError = satcatResult.status === 'rejected' && satcatResult.reason instanceof Error ? satcatResult.reason.message : 'no SATCAT row';
-      throw new Error(`CATNR=${catalogNumber}: ${tleError}; ${satcatError}`);
-    }),
+    catalogNumbers.map((catalogNumber) => lookupCatalogNumber(catalogNumber, fetchedAt)),
   );
 
   const entries = lookupResults.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
@@ -350,6 +334,49 @@ async function getCatalogByCatalogNumbers(catalogNumbers: number[]): Promise<Cat
     throw new Error(`CelesTrak catalog lookup unavailable${failures ? `: ${failures}` : ''}`);
   }
   return dedupeCatalog(entries);
+}
+
+async function lookupCatalogNumber(catalogNumber: number, fetchedAt: string): Promise<CatalogEntry[]> {
+  const satcatLookup = settlePromise(fetchSatcatRecord(catalogNumber, CATNR_SATCAT_FETCH_TIMEOUT_MS));
+  const tleResult = await settlePromise(fetchTleByCatalogNumber(catalogNumber, CATNR_TLE_FETCH_TIMEOUT_MS));
+  const earlySatcatResult = await settleWithin(satcatLookup, CATNR_SATCAT_ENRICHMENT_GRACE_MS);
+
+  if (tleResult.status === 'fulfilled') {
+    const satcatByCatalog = new Map<number, CelestrakSatcatRecord>();
+    const satcat = earlySatcatResult?.status === 'fulfilled' ? earlySatcatResult.value : undefined;
+    if (satcat) {
+      const satcatCatalogNumber = Number(satcat.NORAD_CAT_ID);
+      if (Number.isFinite(satcatCatalogNumber)) {
+        satcatByCatalog.set(satcatCatalogNumber, satcat);
+      }
+    }
+    const parsed = parseTleCatalog(tleResult.value, 'Tracked', fetchedAt, satcatByCatalog);
+    if (parsed.length) return parsed;
+  }
+
+  const satcatResult = earlySatcatResult ?? await satcatLookup;
+  const satcatOnly = satcatResult.status === 'fulfilled' ? catalogEntryFromSatcat(satcatResult.value, fetchedAt) : null;
+  if (satcatOnly) return [satcatOnly];
+
+  const tleError = tleResult.status === 'rejected' && tleResult.reason instanceof Error ? tleResult.reason.message : 'no TLE rows';
+  const satcatError = satcatResult.status === 'rejected' && satcatResult.reason instanceof Error ? satcatResult.reason.message : 'no SATCAT row';
+  throw new Error(`CATNR=${catalogNumber}: ${tleError}; ${satcatError}`);
+}
+
+function settlePromise<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
+  return promise.then(
+    (value) => ({ status: 'fulfilled', value }),
+    (reason) => ({ status: 'rejected', reason }),
+  );
+}
+
+function settleWithin<T>(promise: Promise<PromiseSettledResult<T>>, timeoutMs: number): Promise<PromiseSettledResult<T> | undefined> {
+  return Promise.race([
+    promise,
+    new Promise<undefined>((resolve) => {
+      setTimeout(() => resolve(undefined), timeoutMs);
+    }),
+  ]);
 }
 
 function catalogEntryFromSatcat(record: CelestrakSatcatRecord, fetchedAt: string): CatalogEntry | null {
@@ -383,9 +410,9 @@ async function fetchTleGroup(group: string) {
   return response.text();
 }
 
-async function fetchTleByCatalogNumber(catalogNumber: number) {
+async function fetchTleByCatalogNumber(catalogNumber: number, timeoutMs = TLE_FETCH_TIMEOUT_MS) {
   const url = `https://celestrak.org/NORAD/elements/gp.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=tle`;
-  const response = await fetchWithTimeout(url, TLE_FETCH_TIMEOUT_MS);
+  const response = await fetchWithTimeout(url, timeoutMs);
   if (!response.ok) throw new Error(`CelesTrak CATNR=${catalogNumber} ${response.status}`);
   return response.text();
 }
@@ -402,10 +429,10 @@ async function fetchSatcatRecords(group: string) {
   return records;
 }
 
-async function fetchSatcatRecord(catalogNumber: number) {
+async function fetchSatcatRecord(catalogNumber: number, timeoutMs = SATCAT_FETCH_TIMEOUT_MS) {
   const rows = await fetchJson<CelestrakSatcatRecord[]>(
     `https://celestrak.org/satcat/records.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=JSON`,
-    SATCAT_FETCH_TIMEOUT_MS,
+    timeoutMs,
   );
   const record = rows[0];
   if (!record) throw new Error(`CelesTrak SATCAT CATNR=${catalogNumber} empty`);

@@ -22,6 +22,7 @@ export interface ConjunctionQuery {
 
 export interface OrbitLabGateway {
   getCatalog(query?: CatalogQuery): Promise<CatalogEntry[]>;
+  getCatalogStrict(query?: CatalogQuery, options?: { timeoutMs?: number }): Promise<CatalogEntry[]>;
   getWeather(): Promise<SpaceWeatherSnapshot>;
   getConjunctions(query?: ConjunctionQuery): Promise<ConjunctionRecord[]>;
   getDecayPredictions(): Promise<DecayPrediction[]>;
@@ -29,11 +30,26 @@ export interface OrbitLabGateway {
   getAlerts(): Promise<DashboardAlert[]>;
 }
 
+async function fetchJson<T>(input: string, options: { timeoutMs?: number } = {}): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), options.timeoutMs ?? 20_000);
+  try {
+    const response = await fetch(input, { signal: controller.signal });
+    if (!response.ok) throw new Error(`${input} returned ${response.status}`);
+    return (await response.json()) as T;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error(`${input} timed out`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 async function safeFetchJson<T>(input: string): Promise<T | null> {
   try {
-    const response = await fetch(input);
-    if (!response.ok) return null;
-    return (await response.json()) as T;
+    return await fetchJson<T>(input);
   } catch {
     return null;
   }
@@ -45,6 +61,15 @@ export function createGateway(): OrbitLabGateway {
       const endpoint = createCatalogEndpoint(query);
       const remote = await safeFetchJson<CatalogEntry[]>(endpoint);
       const data = remote ?? mockCatalog;
+      if (query?.catalogNumbers?.length) {
+        const catalogNumbers = new Set(query.catalogNumbers);
+        return data.filter((entry) => catalogNumbers.has(entry.satcat.catalogNumber));
+      }
+      return query?.group ? data.filter((entry) => entry.group.toLowerCase() === query.group?.toLowerCase()) : data;
+    },
+    async getCatalogStrict(query, options) {
+      const endpoint = createCatalogEndpoint(query);
+      const data = await fetchJson<CatalogEntry[]>(endpoint, options);
       if (query?.catalogNumbers?.length) {
         const catalogNumbers = new Set(query.catalogNumbers);
         return data.filter((entry) => catalogNumbers.has(entry.satcat.catalogNumber));

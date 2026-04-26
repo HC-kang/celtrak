@@ -279,8 +279,8 @@ export const useAppStore = defineStore('app', () => {
     if (existing) {
       return addCatalogToFleet(existing, fleetId);
     }
-    const [entry] = await gateway.getCatalog({ catalogNumbers: [catalogNumber] });
-    if (!entry) return null;
+    const [entry] = await gateway.getCatalogStrict({ catalogNumbers: [catalogNumber] }, { timeoutMs: 15_000 });
+    if (!entry) throw new Error(`NORAD ${catalogNumber} catalog lookup returned no rows`);
     return addCatalogToFleet(entry, fleetId);
   }
 
