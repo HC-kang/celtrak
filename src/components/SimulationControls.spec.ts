@@ -114,4 +114,24 @@ describe('SimulationControls', () => {
 
     expect(wrapper.emitted('set-playback-rate')).toEqual([[-20], [-30], [20]]);
   });
+
+  it('exposes pause and keeps the resume speed visible while paused', async () => {
+    const wrapper = mount(SimulationControls, {
+      props: {
+        livePlaybackRate: 0,
+        orbitTimeIso: '2026-04-24T05:00:00.000Z',
+        resumePlaybackRate: -30,
+        simulationTimeIso: null,
+      },
+    });
+
+    expect(wrapper.text()).toContain('Paused');
+    expect((wrapper.find('input[type="range"]').element as HTMLInputElement).value).toBe('30');
+
+    await wrapper.get('button[aria-label="일시정지"]').trigger('click');
+    await wrapper.find('input[type="range"]').setValue('60');
+
+    expect(wrapper.emitted('toggle-playback-pause')).toEqual([[]]);
+    expect(wrapper.emitted('set-playback-rate')).toEqual([[-60]]);
+  });
 });

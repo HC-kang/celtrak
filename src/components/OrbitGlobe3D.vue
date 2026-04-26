@@ -29,6 +29,7 @@ const isInteracting = ref(false);
 const autoRotate = ref(true);
 const satelliteFollowSuspended = ref(false);
 const playbackRate = computed(() => props.livePlaybackRate ?? 1);
+const playbackRateLabel = computed(() => (playbackRate.value === 0 ? 'paused' : `${playbackRate.value}x`));
 
 const SATELLITE_STATE_COLORS = {
   focused: '#ffffff',
@@ -102,7 +103,7 @@ const activeContactSatelliteIdSet = computed(
 );
 const riskSatelliteIdSet = computed(() => new Set(props.riskSatelliteIds ?? []));
 const orbitModeLabel = computed(() => (props.orbitMode === 'simulation' ? 'SIM' : 'LIVE'));
-const clockLabel = computed(() => `${formatTimestamp(props.orbitTimeIso)} · ${playbackRate.value}x`);
+const clockLabel = computed(() => `${formatTimestamp(props.orbitTimeIso)} · ${playbackRateLabel.value}`);
 
 function buildScene() {
   if (!container.value) return;

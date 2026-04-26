@@ -96,6 +96,7 @@ onUnmounted(() => {
 });
 
 const livePlaybackRate = computed(() => props.livePlaybackRate ?? 1);
+const playbackRateLabel = computed(() => (livePlaybackRate.value === 0 ? 'paused' : `${livePlaybackRate.value}x`));
 const displayedTime = computed(() => new Date(props.orbitTimeIso));
 const displayedTimestamp = computed(() => formatTimestampWithSeconds(displayedTime.value));
 const nightMaskPath = computed(() => createNightMaskPath(displayedTime.value, MAP_WIDTH, MAP_HEIGHT));
@@ -215,7 +216,7 @@ const orbitStats = computed(() => {
     stations,
     avgAltitude: Math.round(avgAltitude).toLocaleString(),
     mode: props.orbitMode === 'simulation' ? 'SIM' : 'LIVE',
-    clockLabel: props.orbitMode === 'simulation' ? `SGP4 simulation · ${livePlaybackRate.value}x` : `SGP4 live · ${livePlaybackRate.value}x`,
+    clockLabel: props.orbitMode === 'simulation' ? `SGP4 simulation · ${playbackRateLabel.value}` : `SGP4 live · ${playbackRateLabel.value}`,
   };
 });
 
