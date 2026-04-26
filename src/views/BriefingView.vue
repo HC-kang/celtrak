@@ -72,8 +72,11 @@ onUnmounted(() => {
 
 const visibleFleetEntries = computed<CatalogEntry[]>(() =>
   (store.selectedFleet?.memberRefs ?? [])
-    .filter((member) => !store.isFleetMemberHidden(member))
-    .map((member) => store.catalog.find((entry) => entry.satcat.catalogNumber === member.catalogNumber))
+    .filter((member) => member.refType === 'catalog' && !store.isFleetMemberHidden(member))
+    .map((member) => {
+      const entry = store.catalog.find((entry) => entry.satcat.catalogNumber === member.catalogNumber);
+      return entry ? catalogEntryWithDisplayName(entry, member) : null;
+    })
     .filter((entry): entry is CatalogEntry => Boolean(entry)),
 );
 
@@ -667,6 +670,19 @@ function cloneFleetMemberRef(refItem: FleetMemberRef): FleetMemberRef {
     customTleId: refItem.customTleId,
     displayName: refItem.displayName,
     tags: [...refItem.tags],
+  };
+}
+
+function catalogEntryWithDisplayName(entry: CatalogEntry, member: FleetMemberRef): CatalogEntry {
+  const displayName = member.displayName?.trim();
+  if (!displayName || displayName === entry.satcat.objectName) return entry;
+  return {
+    ...entry,
+    satcat: {
+      ...entry.satcat,
+      objectName: displayName,
+    },
+    tle: entry.tle ? { ...entry.tle, line0: displayName } : entry.tle,
   };
 }
 
