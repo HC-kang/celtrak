@@ -134,6 +134,28 @@ describe('OrbitMap2D', () => {
     expect(wrapper.find('.orbit-map__track').exists()).toBe(false);
   });
 
+  it('uses the canvas layer for tablet-sized touch maps before the dense threshold', async () => {
+    const restoreTouch = mockMaxTouchPoints(5);
+    try {
+      const satellites = Array.from({ length: 9 }, (_, index) => cloneCatalogEntry(25544 + index));
+      const wrapper = mount(OrbitMap2D, {
+        props: {
+          satellites,
+          groundStations: [station],
+          contactLinks: [],
+          orbitMode: 'live',
+          orbitTimeIso: '2026-04-25T00:00:00.000Z',
+        },
+      });
+      await nextTick();
+
+      expect(wrapper.find('.orbit-map__dynamic-canvas').exists()).toBe(true);
+      expect(wrapper.find('.orbit-map__track').exists()).toBe(false);
+    } finally {
+      restoreTouch();
+    }
+  });
+
   it('includes satellite label rectangles in map hit testing', async () => {
     const wrapper = mount(OrbitMap2D, {
       props: {
@@ -265,5 +287,20 @@ function cloneCatalogEntry(catalogNumber: number): CatalogEntry {
       catalogNumber,
       objectName: `SAT ${catalogNumber}`,
     },
+  };
+}
+
+function mockMaxTouchPoints(value: number) {
+  const descriptor = Object.getOwnPropertyDescriptor(window.navigator, 'maxTouchPoints');
+  Object.defineProperty(window.navigator, 'maxTouchPoints', {
+    configurable: true,
+    value,
+  });
+  return () => {
+    if (descriptor) {
+      Object.defineProperty(window.navigator, 'maxTouchPoints', descriptor);
+      return;
+    }
+    delete (window.navigator as Navigator & { maxTouchPoints?: number }).maxTouchPoints;
   };
 }
