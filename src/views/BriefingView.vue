@@ -504,6 +504,12 @@ async function retryCdmFeedback(toast: CdmFeedbackToast) {
   await activateConjunctionObject({ name: toast.name, catalogNumber: toast.catalogNumber });
 }
 
+function cdmFeedbackStateLabel(state: CdmFeedbackToast['state']) {
+  if (state === 'success') return '성공';
+  if (state === 'error') return '실패';
+  return '요청';
+}
+
 function showCdmFeedback(input: Omit<CdmFeedbackToast, 'id'>) {
   const toast: CdmFeedbackToast = {
     ...input,
@@ -812,6 +818,39 @@ watch(
 
 <template>
   <div class="briefing-page" :class="{ 'briefing-page--map-focus': isMobileViewport && mapFocusMode }">
+    <Teleport to="body">
+      <div v-if="cdmFeedbackToasts.length" class="app-toast-region" role="status" aria-live="polite" aria-atomic="false">
+        <article
+          v-for="toast in cdmFeedbackToasts"
+          :key="toast.id"
+          class="app-toast"
+          :class="`app-toast--${toast.state}`"
+        >
+          <span class="app-toast__status">{{ cdmFeedbackStateLabel(toast.state) }}</span>
+          <div class="app-toast__copy">
+            <strong>{{ toast.message }}</strong>
+            <p v-if="toast.detail">{{ toast.detail }}</p>
+          </div>
+          <button
+            v-if="toast.state === 'error'"
+            class="app-toast__action"
+            type="button"
+            @click="retryCdmFeedback(toast)"
+          >
+            재시도
+          </button>
+          <button
+            class="app-toast__close"
+            type="button"
+            aria-label="알림 닫기"
+            @click="dismissCdmFeedback(toast.id)"
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+        </article>
+      </div>
+    </Teleport>
+
     <section class="war-room">
       <div class="war-room__header">
         <div>
@@ -947,36 +986,6 @@ watch(
             <div class="war-room__side-header">
               <p class="eyebrow">Focus Inspector</p>
               <button v-if="focusedTarget" class="button button--ghost panel-card__action-link" type="button" @click="clearFocusedTarget()">Clear</button>
-            </div>
-
-            <div v-if="cdmFeedbackToasts.length" class="focus-inspector__toasts" role="status" aria-live="polite">
-              <article
-                v-for="toast in cdmFeedbackToasts"
-                :key="toast.id"
-                class="focus-inspector__toast"
-                :class="`focus-inspector__toast--${toast.state}`"
-              >
-                <div>
-                  <strong>{{ toast.message }}</strong>
-                  <p v-if="toast.detail">{{ toast.detail }}</p>
-                </div>
-                <button
-                  v-if="toast.state === 'error'"
-                  class="focus-inspector__toast-action"
-                  type="button"
-                  @click="retryCdmFeedback(toast)"
-                >
-                  재시도
-                </button>
-                <button
-                  class="focus-inspector__toast-close"
-                  type="button"
-                  aria-label="알림 닫기"
-                  @click="dismissCdmFeedback(toast.id)"
-                >
-                  ×
-                </button>
-              </article>
             </div>
 
             <template v-if="focusedSatellite">
