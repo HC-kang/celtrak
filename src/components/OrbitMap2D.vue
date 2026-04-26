@@ -2,6 +2,16 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import * as satellite from 'satellite.js';
 import type { CatalogEntry, GroundStation, LiveContactLink, MapFocusTarget } from '@/domain/types';
+import {
+  buildGroundTrackEphemeris,
+  buildGroundTrackSegments,
+  interpolateGroundTrackPoint,
+  projectLonLat,
+  splitGroundTrackSegments,
+  type GroundTrackBuildInput,
+  type GroundTrackEphemeris,
+  type GroundTrackWorkerResult,
+} from '@/lib/orbitGroundTrack';
 import { createNightMaskPath } from '@/lib/solarTerminator';
 
 const props = defineProps<{
@@ -33,6 +43,15 @@ const MAP_HEIGHT = MAP_WIDTH;
 const MAX_ZOOM = 8;
 const TRAIL_START_MINUTES = -45;
 const TRAIL_END_MINUTES = 120;
+const EPHEMERIS_CACHE_BUCKET_MS = 10 * 60 * 1000;
+const EPHEMERIS_CACHE_MARGIN_MINUTES = 15;
+const EPHEMERIS_SEED_STEP_MS = 10 * 60 * 1000;
+const DESKTOP_TRAIL_MIN_STEP_MS = 30 * 1000;
+const TOUCH_TRAIL_MIN_STEP_MS = 60 * 1000;
+const SAVER_TRAIL_MIN_STEP_MS = 120 * 1000;
+const DESKTOP_TRAIL_ERROR_PX = 0.9;
+const TOUCH_TRAIL_ERROR_PX = 1.75;
+const SAVER_TRAIL_ERROR_PX = 3;
 const FOCUS_ANIMATION_MS = 560;
 const CANVAS_DYNAMIC_LAYER_THRESHOLD = 20;
 const TOUCH_CANVAS_DYNAMIC_LAYER_MIN_TRACKS = 6;
@@ -63,10 +82,13 @@ type SatRec = ReturnType<typeof satellite.twoline2satrec>;
 
 const mapShell = ref<HTMLDivElement | null>(null);
 const svgElement = ref<SVGSVGElement | null>(null);
-const dynamicCanvas = ref<HTMLCanvasElement | null>(null);
+const trailCanvas = ref<HTMLCanvasElement | null>(null);
+const symbolCanvas = ref<HTMLCanvasElement | null>(null);
 const viewportSize = ref({ width: MAP_WIDTH, height: MAP_HEIGHT });
 const windowViewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : MAP_WIDTH);
 const isCoarsePointerDevice = ref(false);
+const ephemerisTracks = ref<Record<string, GroundTrackEphemeris>>({});
+const groundTrackRevision = ref(0);
 const zoom = ref(1);
 const center = ref({ x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 });
 const dragging = ref(false);
@@ -78,12 +100,16 @@ let dragState: DragState | null = null;
 let pinchState: PinchState | null = null;
 let pointerDownSnapshot: PointerDownSnapshot | null = null;
 let focusAnimationFrame = 0;
-let canvasDrawFrame = 0;
+let trailCanvasDrawFrame = 0;
+let symbolCanvasDrawFrame = 0;
 let touchDragCenterFrame = 0;
 let pendingTouchDragCenter: MapPoint | null = null;
+let groundTrackWorker: Worker | null = null;
+let groundTrackRequestId = 0;
 const activePointers = new Map<number, PointerSnapshot>();
 const satrecCache = new Map<string, CachedSatrec>();
 const trailSegmentCache = new Map<string, CachedTrailSegments>();
+const trailPathCache = new WeakMap<MapPoint[], Path2D>();
 
 onMounted(() => {
   coarsePointerMediaQuery = window.matchMedia?.('(pointer: coarse)') ?? null;
@@ -113,6 +139,7 @@ onUnmounted(() => {
   cancelFocusAnimation();
   cancelDynamicCanvasDraw();
   cancelTouchDragCenterUpdate();
+  groundTrackWorker?.terminate();
   resizeObserver?.disconnect();
   coarsePointerMediaQuery?.removeEventListener?.('change', updatePointerProfile);
   window.removeEventListener('resize', updateWindowViewportWidth);
@@ -126,6 +153,10 @@ const displayedTime = computed(() => new Date(props.orbitTimeIso));
 const displayedTimestamp = computed(() => formatTimestampWithSeconds(displayedTime.value));
 const nightMaskTimestamp = computed(() => Math.floor(displayedTime.value.getTime() / NIGHT_MASK_CACHE_BUCKET_MS) * NIGHT_MASK_CACHE_BUCKET_MS);
 const nightMaskPath = computed(() => createNightMaskPath(new Date(nightMaskTimestamp.value), MAP_WIDTH, MAP_HEIGHT));
+const ephemerisBaseTimestamp = computed(
+  () => Math.floor(displayedTime.value.getTime() / EPHEMERIS_CACHE_BUCKET_MS) * EPHEMERIS_CACHE_BUCKET_MS,
+);
+const trailPathTimestamp = computed(() => Math.floor(displayedTime.value.getTime() / trailCacheBucketMs.value) * trailCacheBucketMs.value);
 const viewportAspect = computed(() => viewportSize.value.width / viewportSize.value.height);
 const coverZoom = computed(() => Math.max(1, MAP_WIDTH / (MAP_HEIGHT * viewportAspect.value)));
 const currentView = computed(() => {
@@ -175,7 +206,26 @@ const maxOsmTileZoom = computed(() => {
   return MAX_TILE_ZOOM;
 });
 const trailCacheBucketMs = computed(() => (prefersTouchCanvasLayer.value ? TOUCH_TRAIL_CACHE_BUCKET_MS : DEFAULT_TRAIL_CACHE_BUCKET_MS));
-const trailBaseTimestamp = computed(() => Math.floor(displayedTime.value.getTime() / trailCacheBucketMs.value) * trailCacheBucketMs.value);
+const trailQualityZoomTier = computed(() => clamp(Math.floor(Math.log2(Math.max(zoom.value, 1)) * 2), 0, 6));
+const trailScreenErrorPx = computed(() => {
+  if (props.dataSaver) return SAVER_TRAIL_ERROR_PX;
+  if (usesTouchRenderingBudget.value) return TOUCH_TRAIL_ERROR_PX;
+  return DESKTOP_TRAIL_ERROR_PX;
+});
+const trailMinStepMs = computed(() => {
+  if (props.dataSaver) return SAVER_TRAIL_MIN_STEP_MS;
+  if (usesTouchRenderingBudget.value) return TOUCH_TRAIL_MIN_STEP_MS;
+  return DESKTOP_TRAIL_MIN_STEP_MS;
+});
+const trailQualityKey = computed(() => {
+  const mode = props.dataSaver ? 'saver' : usesTouchRenderingBudget.value ? 'touch' : usesCanvasDynamicLayer.value ? 'canvas' : 'svg';
+  return `${mode}:z${trailQualityZoomTier.value}:e${trailScreenErrorPx.value}:m${trailMinStepMs.value}`;
+});
+const trailErrorThresholdMapUnits = computed(() => {
+  const tierZoom = 2 ** (trailQualityZoomTier.value / 2);
+  const tierViewWidth = MAP_WIDTH / Math.max(tierZoom, 1);
+  return (trailScreenErrorPx.value * tierViewWidth) / Math.max(viewportSize.value.width, 1);
+});
 const riskSatelliteIdSet = computed(() => new Set(props.riskSatelliteIds ?? []));
 const activeContactSatelliteIdSet = computed(
   () => new Set((props.contactLinks ?? []).filter((link) => link.status === 'IN_CONTACT').map((link) => link.satelliteId)),
@@ -209,9 +259,9 @@ const plotted = computed(() =>
     .map((entry) => {
       if (!entry.tle) return null;
       const satrec = getSatrec(entry);
-      const point = projectSatrec(satrec, displayedTime.value);
+      const point = projectEntryAtDisplayedTime(entry, satrec);
       if (!point) return null;
-      const mapPoint = toMapPoint(point.lon, point.lat);
+      const mapPoint = 'x' in point ? { x: point.x, y: point.y } : toMapPoint(point.lon, point.lat);
       const labelBounds = satelliteLabelBounds(mapPoint, labelMapScale.value);
       const id = `catalog:${entry.satcat.catalogNumber}`;
       const tone = satelliteVisualTone(id);
@@ -265,6 +315,26 @@ const orbitStats = computed(() => {
     clockLabel: props.orbitMode === 'simulation' ? `SGP4 simulation · ${playbackRateLabel.value}` : `SGP4 live · ${playbackRateLabel.value}`,
   };
 });
+const groundTrackRequestSignature = computed(() =>
+  [
+    ephemerisBaseTimestamp.value,
+    trailQualityKey.value,
+    trailErrorThresholdMapUnits.value.toFixed(3),
+    props.satellites
+      .map((entry) => (entry.tle ? `${satelliteCacheKey(entry)}:${entry.tle.line1}:${entry.tle.line2}` : `${satelliteCacheKey(entry)}:missing`))
+      .join('|'),
+  ].join('||'),
+);
+const trailCanvasSignature = computed(() =>
+  [
+    usesCanvasDynamicLayer.value,
+    trailPathTimestamp.value,
+    groundTrackRevision.value,
+    viewSignature(currentView.value),
+    visibleWorlds.value.map((world) => world.id).join(','),
+    plotted.value.map((item) => `${item.id}:${item.color}:${item.trailSegments.length}`).join('|'),
+  ].join('||'),
+);
 
 const longitudeLines = computed(() => Array.from({ length: 11 }, (_, index) => (index * MAP_WIDTH) / 10));
 const latitudeLines = computed(() => [-60, -30, 0, 30, 60].map((lat) => toMapPoint(0, lat).y));
@@ -308,6 +378,20 @@ function projectSatrec(satrec: SatRec, timestamp: Date) {
   };
 }
 
+function projectEntryAtDisplayedTime(entry: CatalogEntry, satrec: SatRec) {
+  const track = getGroundTrack(entry);
+  const interpolated = track ? interpolateGroundTrackPoint(track, displayedTime.value.getTime(), MAP_WIDTH) : null;
+  if (interpolated) {
+    return {
+      lon: interpolated.lon,
+      lat: interpolated.lat,
+      x: interpolated.x,
+      y: interpolated.y,
+    };
+  }
+  return projectSatrec(satrec, displayedTime.value);
+}
+
 function getSatrec(entry: CatalogEntry) {
   const cacheKey = satelliteCacheKey(entry);
   const cached = satrecCache.get(cacheKey);
@@ -326,27 +410,49 @@ function getSatrec(entry: CatalogEntry) {
 function getTrailSegments(entry: CatalogEntry, satrec: SatRec) {
   if (props.dataSaver || !entry.tle) return [];
   const cacheKey = satelliteCacheKey(entry);
+  const track = getGroundTrack(entry);
   const cached = trailSegmentCache.get(cacheKey);
   const stepMinutes = trailStepMinutes.value;
-  const baseTimestamp = trailBaseTimestamp.value;
+  const baseTimestamp = trailPathTimestamp.value;
+  const trackRevision = groundTrackRevision.value;
   if (
     cached &&
     cached.line1 === entry.tle.line1 &&
     cached.line2 === entry.tle.line2 &&
     cached.stepMinutes === stepMinutes &&
-    cached.baseTimestamp === baseTimestamp
+    cached.baseTimestamp === baseTimestamp &&
+    cached.trackRevision === trackRevision &&
+    cached.qualityKey === trailQualityKey.value
   ) {
     return cached.segments;
   }
-  const segments = splitTrail(buildTrail(satrec, new Date(baseTimestamp), stepMinutes));
+  const segments = track
+    ? buildGroundTrackSegments(
+        track,
+        baseTimestamp + TRAIL_START_MINUTES * 60 * 1000,
+        baseTimestamp + TRAIL_END_MINUTES * 60 * 1000,
+        MAP_WIDTH,
+      )
+    : splitGroundTrackSegments(buildTrail(satrec, new Date(baseTimestamp), stepMinutes), MAP_WIDTH);
   trailSegmentCache.set(cacheKey, {
     line1: entry.tle.line1,
     line2: entry.tle.line2,
     stepMinutes,
     baseTimestamp,
+    trackRevision,
+    qualityKey: trailQualityKey.value,
     segments,
   });
   return segments;
+}
+
+function getGroundTrack(entry: CatalogEntry) {
+  if (!entry.tle) return null;
+  const track = ephemerisTracks.value[satelliteCacheKey(entry)];
+  if (!track) return null;
+  if (track.line1 !== entry.tle.line1 || track.line2 !== entry.tle.line2) return null;
+  if (track.qualityKey !== trailQualityKey.value) return null;
+  return track;
 }
 
 function buildTrail(satrec: SatRec, base: Date, stepMinutes = trailStepMinutes.value) {
@@ -360,11 +466,7 @@ function buildTrail(satrec: SatRec, base: Date, stepMinutes = trailStepMinutes.v
 }
 
 function toMapPoint(lon: number, lat: number) {
-  const sinLat = Math.sin((clamp(lat, -85.05112878, 85.05112878) * Math.PI) / 180);
-  return {
-    x: ((lon + 180) / 360) * MAP_WIDTH,
-    y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * MAP_HEIGHT,
-  };
+  return projectLonLat(lon, lat, MAP_WIDTH, MAP_HEIGHT);
 }
 
 function radiansToDegrees(value: number) {
@@ -391,6 +493,68 @@ function pruneOrbitCaches() {
   for (const key of trailSegmentCache.keys()) {
     if (!activeKeys.has(key)) trailSegmentCache.delete(key);
   }
+}
+
+function refreshGroundTrackEphemeris() {
+  const satellites = props.satellites
+    .filter((entry) => Boolean(entry.tle))
+    .map((entry) => ({
+      id: satelliteCacheKey(entry),
+      line1: entry.tle!.line1,
+      line2: entry.tle!.line2,
+    }));
+  groundTrackRequestId += 1;
+  const requestId = groundTrackRequestId;
+  if (!satellites.length) {
+    applyGroundTrackResult({ requestId, tracks: [] });
+    return;
+  }
+
+  const input: GroundTrackBuildInput = {
+    requestId,
+    satellites,
+    cacheStartMs: ephemerisBaseTimestamp.value + (TRAIL_START_MINUTES - EPHEMERIS_CACHE_MARGIN_MINUTES) * 60 * 1000,
+    cacheEndMs: ephemerisBaseTimestamp.value + (TRAIL_END_MINUTES + EPHEMERIS_CACHE_MARGIN_MINUTES) * 60 * 1000,
+    errorThresholdMapUnits: trailErrorThresholdMapUnits.value,
+    seedStepMs: EPHEMERIS_SEED_STEP_MS,
+    minStepMs: trailMinStepMs.value,
+    mapWidth: MAP_WIDTH,
+    mapHeight: MAP_HEIGHT,
+    qualityKey: trailQualityKey.value,
+  };
+
+  if (typeof Worker === 'undefined') {
+    applyGroundTrackResult(buildGroundTrackEphemeris(input));
+    return;
+  }
+
+  try {
+    ensureGroundTrackWorker().postMessage(input);
+  } catch (error) {
+    console.error('Ground track worker rejected payload', error);
+    applyGroundTrackResult(buildGroundTrackEphemeris(input));
+  }
+}
+
+function ensureGroundTrackWorker() {
+  if (groundTrackWorker) return groundTrackWorker;
+  groundTrackWorker = new Worker(new URL('../workers/groundTrack.worker.ts', import.meta.url), { type: 'module' });
+  groundTrackWorker.onmessage = (event: MessageEvent<GroundTrackWorkerResult>) => {
+    applyGroundTrackResult(event.data);
+  };
+  groundTrackWorker.onerror = () => {
+    groundTrackWorker?.terminate();
+    groundTrackWorker = null;
+  };
+  return groundTrackWorker;
+}
+
+function applyGroundTrackResult(result: GroundTrackWorkerResult) {
+  if (result.requestId !== groundTrackRequestId) return;
+  ephemerisTracks.value = Object.fromEntries(result.tracks.map((track) => [track.id, track]));
+  groundTrackRevision.value += 1;
+  trailSegmentCache.clear();
+  queueDynamicCanvasDraw();
 }
 
 function zoomIn() {
@@ -852,17 +1016,37 @@ function suspendFocusedSatelliteFollow() {
 
 function queueDynamicCanvasDraw() {
   if (!usesCanvasDynamicLayer.value) return;
-  if (canvasDrawFrame) return;
-  canvasDrawFrame = requestAnimationFrame(() => {
-    canvasDrawFrame = 0;
-    drawDynamicCanvasLayer();
+  queueTrailCanvasDraw();
+  queueSymbolCanvasDraw();
+}
+
+function queueTrailCanvasDraw() {
+  if (!usesCanvasDynamicLayer.value) return;
+  if (trailCanvasDrawFrame) return;
+  trailCanvasDrawFrame = requestAnimationFrame(() => {
+    trailCanvasDrawFrame = 0;
+    drawTrailCanvasLayer();
+  });
+}
+
+function queueSymbolCanvasDraw() {
+  if (!usesCanvasDynamicLayer.value) return;
+  if (symbolCanvasDrawFrame) return;
+  symbolCanvasDrawFrame = requestAnimationFrame(() => {
+    symbolCanvasDrawFrame = 0;
+    drawSymbolCanvasLayer();
   });
 }
 
 function cancelDynamicCanvasDraw() {
-  if (!canvasDrawFrame) return;
-  cancelAnimationFrame(canvasDrawFrame);
-  canvasDrawFrame = 0;
+  if (trailCanvasDrawFrame) {
+    cancelAnimationFrame(trailCanvasDrawFrame);
+    trailCanvasDrawFrame = 0;
+  }
+  if (symbolCanvasDrawFrame) {
+    cancelAnimationFrame(symbolCanvasDrawFrame);
+    symbolCanvasDrawFrame = 0;
+  }
 }
 
 function applyTouchBudgetedCenter(nextCenter: MapPoint) {
@@ -899,9 +1083,31 @@ function cancelTouchDragCenterUpdate() {
   pendingTouchDragCenter = null;
 }
 
-function drawDynamicCanvasLayer() {
-  const canvas = dynamicCanvas.value;
-  if (!usesCanvasDynamicLayer.value || !canvas) return;
+function drawTrailCanvasLayer() {
+  const canvasState = prepareCanvas(trailCanvas.value);
+  if (!usesCanvasDynamicLayer.value || !canvasState) return;
+  const { context, dpr, metrics } = canvasState;
+
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, metrics.width, metrics.height);
+  applyMapCanvasTransform(context, dpr, metrics);
+  drawCanvasTrails(context, metrics);
+}
+
+function drawSymbolCanvasLayer() {
+  const canvasState = prepareCanvas(symbolCanvas.value);
+  if (!usesCanvasDynamicLayer.value || !canvasState) return;
+  const { context, dpr, metrics } = canvasState;
+
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, metrics.width, metrics.height);
+  drawCanvasContacts(context, metrics);
+  drawCanvasStations(context, metrics);
+  drawCanvasSatellites(context, metrics);
+}
+
+function prepareCanvas(canvas: HTMLCanvasElement | null) {
+  if (!canvas) return null;
   const bounds = canvas.getBoundingClientRect();
   const width = Math.max(Math.round(bounds.width || viewportSize.value.width), 1);
   const height = Math.max(Math.round(bounds.height || viewportSize.value.height), 1);
@@ -915,29 +1121,45 @@ function drawDynamicCanvasLayer() {
   }
   const context = canvas.getContext('2d');
   if (!context) return;
+  return {
+    context,
+    dpr,
+    metrics: { view: currentView.value, width, height },
+  };
+}
 
-  context.setTransform(dpr, 0, 0, dpr, 0, 0);
-  context.clearRect(0, 0, width, height);
-  const metrics = { view: currentView.value, width, height };
-
-  drawCanvasTrails(context, metrics);
-  drawCanvasContacts(context, metrics);
-  drawCanvasStations(context, metrics);
-  drawCanvasSatellites(context, metrics);
+function applyMapCanvasTransform(context: CanvasRenderingContext2D, dpr: number, metrics: CanvasMetrics) {
+  const scaleX = metrics.width / metrics.view.width;
+  const scaleY = metrics.height / metrics.view.height;
+  context.setTransform(dpr * scaleX, 0, 0, dpr * scaleY, dpr * -metrics.view.x * scaleX, dpr * -metrics.view.y * scaleY);
 }
 
 function drawCanvasTrails(context: CanvasRenderingContext2D, metrics: CanvasMetrics) {
   context.save();
-  context.lineWidth = plotted.value.length > 80 ? 1.4 : 2.1;
+  context.lineWidth = screenPxToMapUnits(plotted.value.length > 80 ? 1.4 : 2.1, metrics);
   context.lineCap = 'round';
   context.lineJoin = 'round';
-  context.setLineDash(plotted.value.length > 48 ? [1, 11] : [1, 9]);
+  context.setLineDash(
+    plotted.value.length > 48
+      ? [screenPxToMapUnits(1, metrics), screenPxToMapUnits(11, metrics)]
+      : [screenPxToMapUnits(1, metrics), screenPxToMapUnits(9, metrics)],
+  );
   context.globalAlpha = plotted.value.length > 80 ? 0.42 : 0.62;
   for (const world of visibleWorlds.value) {
     for (const item of plotted.value) {
       context.strokeStyle = item.color;
       for (const segment of item.trailSegments) {
-        strokeCanvasTrackPath(context, segment, world.offset, metrics);
+        const shifted = segment.map((point) => ({ x: point.x + world.offset, y: point.y }));
+        if (!polylineIntersectsView(shifted, metrics)) continue;
+        context.save();
+        context.translate(world.offset, 0);
+        const cachedPath = getCanvasTrackPath(segment);
+        if (cachedPath) {
+          context.stroke(cachedPath);
+        } else {
+          strokeCanvasTrackPath(context, segment);
+        }
+        context.restore();
       }
     }
   }
@@ -1105,16 +1327,28 @@ function drawCanvasSatelliteLabel(
   context.restore();
 }
 
-function strokeCanvasTrackPath(context: CanvasRenderingContext2D, points: MapPoint[], worldOffset: number, metrics: CanvasMetrics) {
-  const shifted = points.map((point) => ({ x: point.x + worldOffset, y: point.y }));
-  if (!polylineIntersectsView(shifted, metrics)) return;
-  if (!shifted.length) return;
-  const first = mapToCanvasPoint(shifted[0], metrics);
+function getCanvasTrackPath(points: MapPoint[]) {
+  if (typeof Path2D === 'undefined') return null;
+  const cached = trailPathCache.get(points);
+  if (cached) return cached;
+  const path = new Path2D();
+  if (points.length) {
+    path.moveTo(points[0].x, points[0].y);
+    for (const point of points.slice(1)) {
+      path.lineTo(point.x, point.y);
+    }
+  }
+  trailPathCache.set(points, path);
+  return path;
+}
+
+function strokeCanvasTrackPath(context: CanvasRenderingContext2D, points: MapPoint[]) {
+  if (!points.length) return;
+  const first = points[0];
   context.beginPath();
   context.moveTo(first.x, first.y);
-  for (const point of shifted.slice(1)) {
-    const next = mapToCanvasPoint(point, metrics);
-    context.lineTo(next.x, next.y);
+  for (const point of points.slice(1)) {
+    context.lineTo(point.x, point.y);
   }
   context.stroke();
 }
@@ -1138,6 +1372,16 @@ function mapToCanvasPoint(point: MapPoint, metrics: CanvasMetrics) {
     x: ((point.x - metrics.view.x) / metrics.view.width) * metrics.width,
     y: ((point.y - metrics.view.y) / metrics.view.height) * metrics.height,
   };
+}
+
+function screenPxToMapUnits(px: number, metrics: CanvasMetrics) {
+  const unitsPerPixelX = metrics.view.width / Math.max(metrics.width, 1);
+  const unitsPerPixelY = metrics.view.height / Math.max(metrics.height, 1);
+  return px * ((unitsPerPixelX + unitsPerPixelY) / 2);
+}
+
+function viewSignature(view: CanvasMetrics['view']) {
+  return `${view.x.toFixed(2)}:${view.y.toFixed(2)}:${view.width.toFixed(2)}:${view.height.toFixed(2)}`;
 }
 
 function pointInExpandedView(point: MapPoint, metrics: CanvasMetrics, paddingPx: number) {
@@ -1316,6 +1560,8 @@ interface CachedTrailSegments {
   line2: string;
   stepMinutes: number;
   baseTimestamp: number;
+  trackRevision: number;
+  qualityKey: string;
   segments: MapPoint[][];
 }
 
@@ -1325,17 +1571,20 @@ watch(
 );
 
 watch(
-  () => [
-    plotted.value,
-    stationPoints.value,
-    activeContactSegments.value,
-    currentView.value,
-    visibleWorlds.value,
-    props.focusedTarget,
-    props.hoveredTarget,
-    usesCanvasDynamicLayer.value,
-  ],
-  () => queueDynamicCanvasDraw(),
+  groundTrackRequestSignature,
+  () => refreshGroundTrackEphemeris(),
+  { immediate: true },
+);
+
+watch(
+  trailCanvasSignature,
+  () => queueTrailCanvasDraw(),
+  { flush: 'post' },
+);
+
+watch(
+  () => [plotted.value, stationPoints.value, activeContactSegments.value, currentView.value, visibleWorlds.value, props.focusedTarget, props.hoveredTarget, usesCanvasDynamicLayer.value],
+  () => queueSymbolCanvasDraw(),
   { flush: 'post' },
 );
 
@@ -1561,8 +1810,14 @@ watch(
     </svg>
     <canvas
       v-if="usesCanvasDynamicLayer"
-      ref="dynamicCanvas"
-      class="orbit-map__dynamic-canvas"
+      ref="trailCanvas"
+      class="orbit-map__dynamic-canvas orbit-map__trail-canvas"
+      aria-hidden="true"
+    ></canvas>
+    <canvas
+      v-if="usesCanvasDynamicLayer"
+      ref="symbolCanvas"
+      class="orbit-map__dynamic-canvas orbit-map__symbol-canvas"
       aria-hidden="true"
     ></canvas>
 
