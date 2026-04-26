@@ -92,3 +92,5 @@
 - 2026-04-26: Orbit Time jumps and manually applied times should enter a flowing simulation playback state, not a frozen snapshot. The playback speed applies to both live and simulation time, the UI label is `Speed`, and the control is a 1x-300x slider rather than fixed preset buttons.
 
 - 2026-04-26: Rebase with `main` combined flowing simulation playback with focused Contact Window precision. Precision worker request keys should use the simulation anchor (`store.simulationTimeIso`) instead of the displayed ticking orbit time, otherwise flowing simulation mode can re-request precision every orbit-clock tick.
+
+- 2026-04-26: Focused satellites should stop auto-following after user map/globe navigation while retaining Focus Inspector selection, matching ground-station focus behavior. Speed direction is a signed playback rate; keep the UI as a single slider plus a tape-control style direction toggle (`>>` forward / `<<` rewind). Individual CATNR Worker lookup should fetch SATCAT and TLE concurrently and tolerate one-source failure so `/api/celestrak/catalog?catnr=...` does not hang behind a slow upstream branch.

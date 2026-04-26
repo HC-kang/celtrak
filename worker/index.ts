@@ -53,7 +53,7 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v4';
+const API_CACHE_VERSION = 'v5';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
 const MAX_CATALOG_NUMBER_LOOKUP = 100;
@@ -318,30 +318,62 @@ async function getCatalog(url: URL): Promise<CatalogEntry[]> {
 
 async function getCatalogByCatalogNumbers(catalogNumbers: number[]): Promise<CatalogEntry[]> {
   const fetchedAt = new Date().toISOString();
-  const satcatResults = await Promise.allSettled(catalogNumbers.map((catalogNumber) => fetchSatcatRecord(catalogNumber)));
-  const satcatByCatalog = new Map<number, CelestrakSatcatRecord>();
-  for (const result of satcatResults) {
-    if (result.status !== 'fulfilled') continue;
-    const catalogNumber = Number(result.value.NORAD_CAT_ID);
-    if (Number.isFinite(catalogNumber)) {
-      satcatByCatalog.set(catalogNumber, result.value);
-    }
-  }
-
-  const tleResults = await Promise.allSettled(
-    catalogNumbers.map((catalogNumber) =>
-      fetchTleByCatalogNumber(catalogNumber).then((tle) => parseTleCatalog(tle, 'Tracked', fetchedAt, satcatByCatalog)),
-    ),
+  const lookupResults = await Promise.allSettled(
+    catalogNumbers.map(async (catalogNumber) => {
+      const [satcatResult, tleResult] = await Promise.allSettled([fetchSatcatRecord(catalogNumber), fetchTleByCatalogNumber(catalogNumber)]);
+      const satcat = satcatResult.status === 'fulfilled' ? satcatResult.value : undefined;
+      if (tleResult.status === 'fulfilled') {
+        const satcatByCatalog = new Map<number, CelestrakSatcatRecord>();
+        if (satcat) {
+          const satcatCatalogNumber = Number(satcat.NORAD_CAT_ID);
+          if (Number.isFinite(satcatCatalogNumber)) {
+            satcatByCatalog.set(satcatCatalogNumber, satcat);
+          }
+        }
+        const parsed = parseTleCatalog(tleResult.value, 'Tracked', fetchedAt, satcatByCatalog);
+        if (parsed.length) return parsed;
+      }
+      const satcatOnly = satcat ? catalogEntryFromSatcat(satcat, fetchedAt) : null;
+      if (satcatOnly) return [satcatOnly];
+      const tleError = tleResult.status === 'rejected' && tleResult.reason instanceof Error ? tleResult.reason.message : 'no TLE rows';
+      const satcatError = satcatResult.status === 'rejected' && satcatResult.reason instanceof Error ? satcatResult.reason.message : 'no SATCAT row';
+      throw new Error(`CATNR=${catalogNumber}: ${tleError}; ${satcatError}`);
+    }),
   );
-  const entries = tleResults.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+
+  const entries = lookupResults.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
   if (!entries.length) {
-    const failures = tleResults
+    const failures = lookupResults
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
       .map((result) => (result.reason instanceof Error ? result.reason.message : 'unknown'))
       .join('; ');
     throw new Error(`CelesTrak catalog lookup unavailable${failures ? `: ${failures}` : ''}`);
   }
   return dedupeCatalog(entries);
+}
+
+function catalogEntryFromSatcat(record: CelestrakSatcatRecord, fetchedAt: string): CatalogEntry | null {
+  const catalogNumber = Number(record.NORAD_CAT_ID);
+  if (!Number.isFinite(catalogNumber)) return null;
+  return {
+    origin: 'OSINT',
+    fetchedAt,
+    group: 'SATCAT',
+    satcat: {
+      catalogNumber,
+      objectId: cleanString(record.OBJECT_ID) ?? '',
+      objectName: cleanString(record.OBJECT_NAME) ?? `NORAD ${catalogNumber}`,
+      objectType: normalizeObjectType(record.OBJECT_TYPE),
+      opsStatusCode: normalizeOpsStatus(record.OPS_STATUS_CODE),
+      ownerCountry: cleanString(record.OWNER) ?? 'UNKNOWN',
+      launchDate: cleanString(record.LAUNCH_DATE),
+      inclinationDeg: numberFromUnknown(record.INCLINATION),
+      apogeeKm: numberFromUnknown(record.APOGEE),
+      perigeeKm: numberFromUnknown(record.PERIGEE),
+      periodMinutes: numberFromUnknown(record.PERIOD),
+      fetchedAt,
+    },
+  };
 }
 
 async function fetchTleGroup(group: string) {

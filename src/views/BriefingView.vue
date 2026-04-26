@@ -373,10 +373,16 @@ function anchorOrbitPlayback(orbitTimeIso: string) {
 function setPlaybackRate(rate: number) {
   const currentDisplayedMs = displayedOrbitTime.value.getTime();
   const wallNow = Date.now();
-  livePlaybackRate.value = rate;
+  livePlaybackRate.value = normalizePlaybackRate(rate);
   liveWallClockAnchor.value = wallNow;
   liveOrbitAnchor.value = Number.isFinite(currentDisplayedMs) ? currentDisplayedMs : wallNow;
   orbitClockTick.value = wallNow;
+}
+
+function normalizePlaybackRate(rate: number) {
+  const direction = rate < 0 ? -1 : 1;
+  const magnitude = Math.min(Math.max(Math.round(Math.abs(rate)), 1), 300);
+  return direction * magnitude;
 }
 
 function toggleMapControls() {
