@@ -24,6 +24,9 @@ const emit = defineEmits<{
 
 const BASE_TILE_ZOOM = 2;
 const MAX_TILE_ZOOM = 7;
+const TOUCH_RENDERING_BUDGET_TILE_ZOOM = BASE_TILE_ZOOM + 1;
+const TOUCH_DYNAMIC_CANVAS_DPR = 1.5;
+const DEFAULT_DYNAMIC_CANVAS_DPR = 2;
 const TILE_SIZE = 256;
 const MAP_WIDTH = TILE_SIZE * 2 ** BASE_TILE_ZOOM;
 const MAP_HEIGHT = MAP_WIDTH;
@@ -76,6 +79,8 @@ let pinchState: PinchState | null = null;
 let pointerDownSnapshot: PointerDownSnapshot | null = null;
 let focusAnimationFrame = 0;
 let canvasDrawFrame = 0;
+let touchDragCenterFrame = 0;
+let pendingTouchDragCenter: MapPoint | null = null;
 const activePointers = new Map<number, PointerSnapshot>();
 const satrecCache = new Map<string, CachedSatrec>();
 const trailSegmentCache = new Map<string, CachedTrailSegments>();
@@ -107,6 +112,7 @@ onMounted(() => {
 onUnmounted(() => {
   cancelFocusAnimation();
   cancelDynamicCanvasDraw();
+  cancelTouchDragCenterUpdate();
   resizeObserver?.disconnect();
   coarsePointerMediaQuery?.removeEventListener?.('change', updatePointerProfile);
   window.removeEventListener('resize', updateWindowViewportWidth);
@@ -162,6 +168,12 @@ const prefersTouchCanvasLayer = computed(
 const usesCanvasDynamicLayer = computed(
   () => props.satellites.length > CANVAS_DYNAMIC_LAYER_THRESHOLD || prefersTouchCanvasLayer.value,
 );
+const usesTouchRenderingBudget = computed(() => isCoarsePointerDevice.value);
+const maxOsmTileZoom = computed(() => {
+  if (props.dataSaver) return BASE_TILE_ZOOM;
+  if (usesTouchRenderingBudget.value) return Math.min(MAX_TILE_ZOOM, TOUCH_RENDERING_BUDGET_TILE_ZOOM);
+  return MAX_TILE_ZOOM;
+});
 const trailCacheBucketMs = computed(() => (prefersTouchCanvasLayer.value ? TOUCH_TRAIL_CACHE_BUCKET_MS : DEFAULT_TRAIL_CACHE_BUCKET_MS));
 const trailBaseTimestamp = computed(() => Math.floor(displayedTime.value.getTime() / trailCacheBucketMs.value) * trailCacheBucketMs.value);
 const riskSatelliteIdSet = computed(() => new Set(props.riskSatelliteIds ?? []));
@@ -184,6 +196,7 @@ const stationPoints = computed(() =>
 const trailStepMinutes = computed(() => {
   if (props.dataSaver) return 10;
   if (props.satellites.length > 80) return 12;
+  if (usesTouchRenderingBudget.value) return 8;
   if (usesCanvasDynamicLayer.value) return 6;
   return 2;
 });
@@ -257,7 +270,7 @@ const orbitStats = computed(() => {
 const longitudeLines = computed(() => Array.from({ length: 11 }, (_, index) => (index * MAP_WIDTH) / 10));
 const latitudeLines = computed(() => [-60, -30, 0, 30, 60].map((lat) => toMapPoint(0, lat).y));
 const osmTiles = computed(() => {
-  const tileZoom = clamp(BASE_TILE_ZOOM + Math.floor(Math.log2(Math.max(zoom.value, 1))), BASE_TILE_ZOOM, MAX_TILE_ZOOM);
+  const tileZoom = clamp(BASE_TILE_ZOOM + Math.floor(Math.log2(Math.max(zoom.value, 1))), BASE_TILE_ZOOM, maxOsmTileZoom.value);
   const zoomScale = 2 ** (tileZoom - BASE_TILE_ZOOM);
   const tileSize = TILE_SIZE / zoomScale;
   const tilesPerAxis = 2 ** tileZoom;
@@ -395,6 +408,7 @@ function zoomOut() {
 
 function resetMapView() {
   cancelFocusAnimation();
+  cancelTouchDragCenterUpdate();
   suspendFocusedSatelliteFollow();
   userMovedMap.value = false;
   zoom.value = coverZoom.value;
@@ -460,11 +474,11 @@ function onPointerMove(event: PointerEvent) {
   suspendFocusedSatelliteFollow();
   const dx = ((event.clientX - dragState.startClientX) / viewportSize.value.width) * dragState.viewWidth;
   const dy = ((event.clientY - dragState.startClientY) / viewportSize.value.height) * dragState.viewHeight;
-  center.value = clampCenter(dragState.startCenterX - dx, dragState.startCenterY - dy, zoom.value);
-  queueDynamicCanvasDraw();
+  applyTouchBudgetedCenter(clampCenter(dragState.startCenterX - dx, dragState.startCenterY - dy, zoom.value));
 }
 
 function onPointerUp(event: PointerEvent) {
+  flushTouchDragCenterUpdate();
   const shouldFocus =
     event.type !== 'pointerleave' &&
     pointerDownSnapshot?.pointerId === event.pointerId &&
@@ -492,6 +506,7 @@ function onPointerUp(event: PointerEvent) {
 }
 
 function setZoom(nextZoom: number, anchor?: MapPoint) {
+  cancelTouchDragCenterUpdate();
   const clampedZoom = clamp(nextZoom, 1, MAX_ZOOM);
   if (!anchor) {
     zoom.value = clampedZoom;
@@ -513,6 +528,7 @@ function setZoom(nextZoom: number, anchor?: MapPoint) {
 }
 
 function panBy(deltaX: number, deltaY: number) {
+  cancelTouchDragCenterUpdate();
   center.value = clampCenter(center.value.x + deltaX, center.value.y + deltaY, zoom.value);
   queueDynamicCanvasDraw();
 }
@@ -557,6 +573,7 @@ function updatePinch() {
   const view = currentView.value;
   const deltaX = ((nextMidpoint.x - pinchState.lastMidpoint.x) / viewportSize.value.width) * view.width;
   const deltaY = ((nextMidpoint.y - pinchState.lastMidpoint.y) / viewportSize.value.height) * view.height;
+  cancelTouchDragCenterUpdate();
   center.value = clampCenter(center.value.x - deltaX, center.value.y - deltaY, zoom.value);
   queueDynamicCanvasDraw();
 
@@ -863,13 +880,48 @@ function cancelDynamicCanvasDraw() {
   canvasDrawFrame = 0;
 }
 
+function applyTouchBudgetedCenter(nextCenter: MapPoint) {
+  if (!usesTouchRenderingBudget.value) {
+    center.value = nextCenter;
+    queueDynamicCanvasDraw();
+    return;
+  }
+
+  pendingTouchDragCenter = nextCenter;
+  if (touchDragCenterFrame) return;
+  touchDragCenterFrame = requestAnimationFrame(() => {
+    touchDragCenterFrame = 0;
+    flushTouchDragCenterUpdate();
+  });
+}
+
+function flushTouchDragCenterUpdate() {
+  if (touchDragCenterFrame) {
+    cancelAnimationFrame(touchDragCenterFrame);
+    touchDragCenterFrame = 0;
+  }
+  if (!pendingTouchDragCenter) return;
+  center.value = pendingTouchDragCenter;
+  pendingTouchDragCenter = null;
+  queueDynamicCanvasDraw();
+}
+
+function cancelTouchDragCenterUpdate() {
+  if (touchDragCenterFrame) {
+    cancelAnimationFrame(touchDragCenterFrame);
+    touchDragCenterFrame = 0;
+  }
+  pendingTouchDragCenter = null;
+}
+
 function drawDynamicCanvasLayer() {
   const canvas = dynamicCanvas.value;
   if (!usesCanvasDynamicLayer.value || !canvas) return;
   const bounds = canvas.getBoundingClientRect();
   const width = Math.max(Math.round(bounds.width || viewportSize.value.width), 1);
   const height = Math.max(Math.round(bounds.height || viewportSize.value.height), 1);
-  const dpr = Math.min(window.devicePixelRatio || 1, props.dataSaver ? 1.25 : 2);
+  const dprLimit = props.dataSaver ? 1.25 : usesTouchRenderingBudget.value ? TOUCH_DYNAMIC_CANVAS_DPR : DEFAULT_DYNAMIC_CANVAS_DPR;
+  const dpr = Math.min(window.devicePixelRatio || 1, dprLimit);
   const pixelWidth = Math.max(Math.round(width * dpr), 1);
   const pixelHeight = Math.max(Math.round(height * dpr), 1);
   if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
@@ -1335,7 +1387,12 @@ watch(
 </script>
 
 <template>
-  <div ref="mapShell" class="orbit-map orbit-map--2d" :class="{ 'orbit-map--dragging': dragging }" aria-label="2D orbit map">
+  <div
+    ref="mapShell"
+    class="orbit-map orbit-map--2d"
+    :class="{ 'orbit-map--dragging': dragging, 'orbit-map--touch-budget': usesTouchRenderingBudget }"
+    aria-label="2D orbit map"
+  >
     <div class="orbit-map__hud orbit-map__hud--top">
       <div>
         <p class="eyebrow">Ground Track</p>
