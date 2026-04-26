@@ -500,15 +500,21 @@ export const useAppStore = defineStore('app', () => {
     return (preferences.value.hiddenTrackedRefs ?? []).includes(hiddenKeyFor(refItem, fleetId));
   }
 
-  function setFleetMemberHidden(refItem: FleetMemberRef, hidden: boolean, fleetId = selectedFleet.value?.id) {
-    const key = hiddenKeyFor(refItem, fleetId);
+  function setFleetMembersHidden(refItems: FleetMemberRef[], hidden: boolean, fleetId = selectedFleet.value?.id) {
     const hiddenRefs = new Set(preferences.value.hiddenTrackedRefs ?? []);
-    if (hidden) {
-      hiddenRefs.add(key);
-    } else {
-      hiddenRefs.delete(key);
+    for (const refItem of refItems) {
+      const key = hiddenKeyFor(refItem, fleetId);
+      if (hidden) {
+        hiddenRefs.add(key);
+      } else {
+        hiddenRefs.delete(key);
+      }
     }
     updatePreferences({ hiddenTrackedRefs: [...hiddenRefs] });
+  }
+
+  function setFleetMemberHidden(refItem: FleetMemberRef, hidden: boolean, fleetId = selectedFleet.value?.id) {
+    setFleetMembersHidden([refItem], hidden, fleetId);
   }
 
   function toggleFleetMemberHidden(refItem: FleetMemberRef) {
@@ -621,6 +627,8 @@ export const useAppStore = defineStore('app', () => {
     setOfflineState,
     setPassPredictions,
     setDefaultGroundStation,
+    setFleetMembersHidden,
+    setFleetMemberHidden,
     setSimulationTime,
     setUpdateHandler,
     shiftSimulationHours,
