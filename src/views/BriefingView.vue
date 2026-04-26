@@ -36,6 +36,7 @@ const cdmLoading = ref(false);
 const cdmError = ref('');
 const contactPrecisionResults = ref<Record<string, ContactPrecisionResult>>({});
 const contactPrecisionPendingKeys = ref<Set<string>>(new Set());
+const addingConjunctionCatalogNumbers = ref<Set<number>>(new Set());
 let orbitClockTimer: number | null = null;
 let contactPrecisionWorker: Worker | null = null;
 let contactPrecisionRequestId = 0;
@@ -382,12 +383,6 @@ function setFocusedTarget(target: MapFocusTarget) {
   focusedTarget.value = target;
 }
 
-function setFocusedTargetIfAvailable(target: MapFocusTarget | null) {
-  if (target) {
-    focusedTarget.value = target;
-  }
-}
-
 function clearFocusedTarget() {
   focusedTarget.value = null;
 }
@@ -402,6 +397,48 @@ function groundStationFocusTarget(id: string): MapFocusTarget {
 
 function conjunctionObjectTarget(item: ConjunctionRecord['primary']) {
   return item.catalogNumber ? satelliteFocusTarget(`catalog:${item.catalogNumber}`) : null;
+}
+
+function isConjunctionObjectTracked(item: ConjunctionRecord['primary']) {
+  return Boolean(item.catalogNumber && store.selectedFleetCatalogNumbers.includes(item.catalogNumber));
+}
+
+function isAddingConjunctionObject(item: ConjunctionRecord['primary']) {
+  return Boolean(item.catalogNumber && addingConjunctionCatalogNumbers.value.has(item.catalogNumber));
+}
+
+function conjunctionChipClasses(item: ConjunctionRecord['primary']) {
+  const target = conjunctionObjectTarget(item);
+  const tracked = isConjunctionObjectTracked(item);
+  return {
+    'focus-inspector__chip--active': tracked && focusTargetMatches(focusedTarget.value, target),
+    'focus-inspector__chip--preview':
+      tracked && focusTargetMatches(hoveredTarget.value, target) && !focusTargetMatches(focusedTarget.value, target),
+    'focus-inspector__chip--addable': Boolean(item.catalogNumber && !tracked),
+    'focus-inspector__chip--loading': isAddingConjunctionObject(item),
+  };
+}
+
+function conjunctionChipLabel(item: ConjunctionRecord['primary']) {
+  if (!item.catalogNumber) return item.name;
+  return isConjunctionObjectTracked(item) ? item.name : `${item.name} 추적 추가`;
+}
+
+async function activateConjunctionObject(item: ConjunctionRecord['primary']) {
+  const target = conjunctionObjectTarget(item);
+  if (!target || !item.catalogNumber) return;
+  if (!isConjunctionObjectTracked(item)) {
+    addingConjunctionCatalogNumbers.value = new Set([...addingConjunctionCatalogNumbers.value, item.catalogNumber]);
+    try {
+      const added = await store.addCatalogNumberToFleet(item.catalogNumber);
+      if (!added) return;
+    } finally {
+      const next = new Set(addingConjunctionCatalogNumbers.value);
+      next.delete(item.catalogNumber);
+      addingConjunctionCatalogNumbers.value = next;
+    }
+  }
+  setFocusedTarget(target);
 }
 
 function setHoveredTarget(target: MapFocusTarget | null) {
@@ -919,13 +956,12 @@ watch(
                     <button
                       v-if="conjunctionObjectTarget(item.primary)"
                       class="focus-inspector__chip focus-inspector__chip--satellite"
-                      :class="{
-                        'focus-inspector__chip--active': focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.primary)),
-                        'focus-inspector__chip--preview': focusTargetMatches(hoveredTarget, conjunctionObjectTarget(item.primary)) && !focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.primary)),
-                      }"
+                      :class="conjunctionChipClasses(item.primary)"
                       type="button"
-                      :aria-pressed="focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.primary))"
-                      @click="setFocusedTargetIfAvailable(conjunctionObjectTarget(item.primary))"
+                      :aria-label="conjunctionChipLabel(item.primary)"
+                      :aria-pressed="isConjunctionObjectTracked(item.primary) && focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.primary))"
+                      :disabled="isAddingConjunctionObject(item.primary)"
+                      @click="activateConjunctionObject(item.primary)"
                       @mouseenter="setHoveredTarget(conjunctionObjectTarget(item.primary))"
                       @mouseleave="clearHoveredTarget(conjunctionObjectTarget(item.primary))"
                       @focus="setHoveredTarget(conjunctionObjectTarget(item.primary))"
@@ -938,13 +974,12 @@ watch(
                     <button
                       v-if="conjunctionObjectTarget(item.secondary)"
                       class="focus-inspector__chip focus-inspector__chip--satellite"
-                      :class="{
-                        'focus-inspector__chip--active': focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.secondary)),
-                        'focus-inspector__chip--preview': focusTargetMatches(hoveredTarget, conjunctionObjectTarget(item.secondary)) && !focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.secondary)),
-                      }"
+                      :class="conjunctionChipClasses(item.secondary)"
                       type="button"
-                      :aria-pressed="focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.secondary))"
-                      @click="setFocusedTargetIfAvailable(conjunctionObjectTarget(item.secondary))"
+                      :aria-label="conjunctionChipLabel(item.secondary)"
+                      :aria-pressed="isConjunctionObjectTracked(item.secondary) && focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.secondary))"
+                      :disabled="isAddingConjunctionObject(item.secondary)"
+                      @click="activateConjunctionObject(item.secondary)"
                       @mouseenter="setHoveredTarget(conjunctionObjectTarget(item.secondary))"
                       @mouseleave="clearHoveredTarget(conjunctionObjectTarget(item.secondary))"
                       @focus="setHoveredTarget(conjunctionObjectTarget(item.secondary))"
