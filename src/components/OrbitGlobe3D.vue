@@ -1223,6 +1223,16 @@ function focusGlobeOnTarget(target: MapFocusTarget | null | undefined) {
   targetCameraDistance = Math.min(targetCameraDistance, 4.85);
 }
 
+function followFocusedSatellite() {
+  if (props.focusedTarget?.type !== 'satellite' || isInteracting.value) return;
+  const targetVector = findSatelliteVector(props.focusedTarget.id);
+  if (!targetVector) return;
+  cancelGlobeFocusAnimation();
+  setGlobeRotation(rotationForFocusTarget(targetVector));
+  autoRotate.value = false;
+  targetCameraDistance = Math.min(targetCameraDistance, 4.85);
+}
+
 function rotationForFocusTarget(targetVector: THREE.Vector3) {
   const z = INITIAL_EARTH_ROTATION.z;
   const zRotated = targetVector.clone().normalize().applyEuler(new THREE.Euler(0, 0, z, 'XYZ'));
@@ -1404,6 +1414,7 @@ function syncTimer() {
   timer = window.setInterval(() => {
     updateSatellites();
     updateContactLinks();
+    followFocusedSatellite();
   }, props.dataSaver ? 4200 : 1200);
 }
 
@@ -1460,10 +1471,11 @@ watch(
   () => props.orbitTimeIso,
   () => {
     updateSunLighting();
-    if (props.orbitMode === 'simulation') {
+    if (props.orbitMode === 'simulation' || props.focusedTarget?.type === 'satellite') {
       updateSatellites();
       updateContactLinks();
     }
+    followFocusedSatellite();
   },
 );
 

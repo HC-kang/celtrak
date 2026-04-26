@@ -262,7 +262,7 @@ const intelQueue = computed(() =>
       kicker: 'Conjunction',
       title: `${item.primary.name} × ${item.secondary.name}`,
       detail: `${item.missDistanceKm.toFixed(1)} km miss · ${item.relVelocityKmS.toFixed(1)} km/s`,
-      time: formatRelative(item.tca),
+      time: formatOrbitRelative(item.tca),
       tone: cdmSeverity(item),
     })),
     ...store.filteredDecayPredictions.slice(0, 1).map((item) => ({
@@ -320,6 +320,7 @@ function setOrbitTime(value: string | null) {
 
 function resetLiveOrbit() {
   const wallNow = Date.now();
+  livePlaybackRate.value = 1;
   liveWallClockAnchor.value = wallNow;
   liveOrbitAnchor.value = wallNow;
   orbitClockTick.value = wallNow;
@@ -399,6 +400,21 @@ function linkStatusLabel(link: LiveContactLink) {
   if (link.status === 'IN_CONTACT') return `LOS까지 ${formatCountdown(link.countdownSeconds, link.countdownIsLowerBound)}`;
   if (link.status === 'BEFORE_AOS') return `AOS까지 ${formatCountdown(link.countdownSeconds, link.countdownIsLowerBound)}`;
   return '가시권 밖';
+}
+
+function formatOrbitRelative(value?: string) {
+  if (!value) return '알 수 없음';
+  const targetMs = new Date(value).getTime();
+  const baseMs = displayedOrbitTime.value.getTime();
+  if (!Number.isFinite(targetMs) || !Number.isFinite(baseMs)) return '알 수 없음';
+  const deltaMs = targetMs - baseMs;
+  const suffix = deltaMs >= 0 ? '후' : '전';
+  const absMinutes = Math.max(0, Math.round(Math.abs(deltaMs) / 60000));
+  if (absMinutes < 1) return `1분 미만 ${suffix}`;
+  if (absMinutes < 60) return `${absMinutes}분 ${suffix}`;
+  const hours = Math.floor(absMinutes / 60);
+  const minutes = absMinutes % 60;
+  return minutes ? `${hours}시간 ${minutes}분 ${suffix}` : `${hours}시간 ${suffix}`;
 }
 
 function cdmSeverity(item: ConjunctionRecord) {
@@ -781,7 +797,7 @@ watch(
                     </button>
                     <span v-else class="focus-inspector__chip focus-inspector__chip--static">{{ item.secondary.name }}</span>
                   </div>
-                  <p>{{ formatRelative(item.tca) }}</p>
+                  <p>{{ formatOrbitRelative(item.tca) }}</p>
                 </div>
               </article>
               <p v-if="!focusedConjunctions.length" class="empty-state">근접경고 없음</p>
@@ -1002,7 +1018,7 @@ watch(
             <strong>{{ cdmSeverityLabel(item) }} · {{ item.primary.name }} × {{ item.secondary.name }}</strong>
             <p>{{ item.missDistanceKm.toFixed(1) }} km miss · {{ item.relVelocityKmS.toFixed(1) }} km/s</p>
           </div>
-          <small>{{ formatRelative(item.tca) }}</small>
+          <small>{{ formatOrbitRelative(item.tca) }}</small>
         </article>
         <article v-if="!cdmLoading && !cdmScopeConjunctions.length" class="stack-list__item">
           <div>

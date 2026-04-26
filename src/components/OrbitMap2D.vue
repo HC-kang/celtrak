@@ -703,15 +703,37 @@ function contactLabelPoint(segment: ContactSegmentLike, worldOffset: number) {
   };
 }
 
-function centerMapOnTarget(target: MapFocusTarget | null | undefined) {
+function centerMapOnTarget(
+  target: MapFocusTarget | null | undefined,
+  options: { animate?: boolean; enforceFocusZoom?: boolean; markUserMoved?: boolean } = {},
+) {
   if (!target) return;
   const point = target.type === 'satellite' ? findSatellitePoint(target.id) : findGroundStationPoint(target.id);
   if (!point) return;
 
-  const targetZoom = Math.max(zoom.value, Math.min(MAX_ZOOM, Math.max(coverZoom.value, 1.85)));
+  const targetZoom =
+    options.enforceFocusZoom === false ? zoom.value : Math.max(zoom.value, Math.min(MAX_ZOOM, Math.max(coverZoom.value, 1.85)));
   const targetX = nearestWrappedX(point.x, center.value.x);
-  animateMapFocus(clampCenter(targetX, point.y, targetZoom), targetZoom);
-  userMovedMap.value = true;
+  const targetCenter = clampCenter(targetX, point.y, targetZoom);
+  if (options.animate === false) {
+    cancelFocusAnimation();
+    zoom.value = targetZoom;
+    center.value = targetCenter;
+    queueDynamicCanvasDraw();
+  } else {
+    animateMapFocus(targetCenter, targetZoom);
+  }
+  userMovedMap.value = options.markUserMoved ?? true;
+}
+
+function followFocusedSatellite() {
+  if (props.focusedTarget?.type !== 'satellite') return;
+  if (dragging.value || pinchState) return;
+  centerMapOnTarget(props.focusedTarget, {
+    animate: false,
+    enforceFocusZoom: false,
+    markUserMoved: userMovedMap.value,
+  });
 }
 
 function queueDynamicCanvasDraw() {
@@ -1169,6 +1191,12 @@ watch(
   () => props.focusedTarget,
   (target) => centerMapOnTarget(target),
   { deep: true },
+);
+
+watch(
+  () => props.orbitTimeIso,
+  () => followFocusedSatellite(),
+  { flush: 'post' },
 );
 </script>
 
