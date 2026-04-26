@@ -32,6 +32,12 @@ const TRAIL_START_MINUTES = -45;
 const TRAIL_END_MINUTES = 120;
 const FOCUS_ANIMATION_MS = 560;
 const CANVAS_DYNAMIC_LAYER_THRESHOLD = 20;
+const TOUCH_CANVAS_DYNAMIC_LAYER_MIN_TRACKS = 6;
+const TOUCH_CANVAS_DYNAMIC_LAYER_MIN_MAP_WIDTH = 480;
+const TOUCH_CANVAS_DYNAMIC_LAYER_MIN_VIEWPORT_WIDTH = 768;
+const NIGHT_MASK_CACHE_BUCKET_MS = 60_000;
+const DEFAULT_TRAIL_CACHE_BUCKET_MS = 15_000;
+const TOUCH_TRAIL_CACHE_BUCKET_MS = 30_000;
 const SATELLITE_LABEL_WIDTH = 126;
 const SATELLITE_LABEL_HEIGHT = 32;
 const SATELLITE_LABEL_RADIUS = 8;
@@ -56,20 +62,29 @@ const mapShell = ref<HTMLDivElement | null>(null);
 const svgElement = ref<SVGSVGElement | null>(null);
 const dynamicCanvas = ref<HTMLCanvasElement | null>(null);
 const viewportSize = ref({ width: MAP_WIDTH, height: MAP_HEIGHT });
+const windowViewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : MAP_WIDTH);
+const isCoarsePointerDevice = ref(false);
 const zoom = ref(1);
 const center = ref({ x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 });
 const dragging = ref(false);
 const userMovedMap = ref(false);
 const satelliteFollowSuspended = ref(false);
 let resizeObserver: ResizeObserver | null = null;
+let coarsePointerMediaQuery: MediaQueryList | null = null;
 let dragState: DragState | null = null;
 let pinchState: PinchState | null = null;
 let pointerDownSnapshot: PointerDownSnapshot | null = null;
 let focusAnimationFrame = 0;
 let canvasDrawFrame = 0;
 const activePointers = new Map<number, PointerSnapshot>();
+const satrecCache = new Map<string, CachedSatrec>();
+const trailSegmentCache = new Map<string, CachedTrailSegments>();
 
 onMounted(() => {
+  coarsePointerMediaQuery = window.matchMedia?.('(pointer: coarse)') ?? null;
+  updatePointerProfile();
+  coarsePointerMediaQuery?.addEventListener?.('change', updatePointerProfile);
+  window.addEventListener('resize', updateWindowViewportWidth);
   resizeObserver = new ResizeObserver(([entry]) => {
     if (!entry) return;
     viewportSize.value = {
@@ -93,13 +108,18 @@ onUnmounted(() => {
   cancelFocusAnimation();
   cancelDynamicCanvasDraw();
   resizeObserver?.disconnect();
+  coarsePointerMediaQuery?.removeEventListener?.('change', updatePointerProfile);
+  window.removeEventListener('resize', updateWindowViewportWidth);
+  satrecCache.clear();
+  trailSegmentCache.clear();
 });
 
 const livePlaybackRate = computed(() => props.livePlaybackRate ?? 1);
 const playbackRateLabel = computed(() => (livePlaybackRate.value === 0 ? 'paused' : `${livePlaybackRate.value}x`));
 const displayedTime = computed(() => new Date(props.orbitTimeIso));
 const displayedTimestamp = computed(() => formatTimestampWithSeconds(displayedTime.value));
-const nightMaskPath = computed(() => createNightMaskPath(displayedTime.value, MAP_WIDTH, MAP_HEIGHT));
+const nightMaskTimestamp = computed(() => Math.floor(displayedTime.value.getTime() / NIGHT_MASK_CACHE_BUCKET_MS) * NIGHT_MASK_CACHE_BUCKET_MS);
+const nightMaskPath = computed(() => createNightMaskPath(new Date(nightMaskTimestamp.value), MAP_WIDTH, MAP_HEIGHT));
 const viewportAspect = computed(() => viewportSize.value.width / viewportSize.value.height);
 const coverZoom = computed(() => Math.max(1, MAP_WIDTH / (MAP_HEIGHT * viewportAspect.value)));
 const currentView = computed(() => {
@@ -132,7 +152,18 @@ const mapViewBox = computed(() => {
 });
 const zoomPercent = computed(() => `${zoom.value.toFixed(1)}x`);
 const labelMapScale = computed(() => clamp(currentView.value.width / viewportSize.value.width, 0.18, 1));
-const usesCanvasDynamicLayer = computed(() => plotted.value.length > CANVAS_DYNAMIC_LAYER_THRESHOLD);
+const prefersTouchCanvasLayer = computed(
+  () =>
+    isCoarsePointerDevice.value &&
+    (windowViewportWidth.value >= TOUCH_CANVAS_DYNAMIC_LAYER_MIN_VIEWPORT_WIDTH ||
+      viewportSize.value.width >= TOUCH_CANVAS_DYNAMIC_LAYER_MIN_MAP_WIDTH) &&
+    props.satellites.length >= TOUCH_CANVAS_DYNAMIC_LAYER_MIN_TRACKS,
+);
+const usesCanvasDynamicLayer = computed(
+  () => props.satellites.length > CANVAS_DYNAMIC_LAYER_THRESHOLD || prefersTouchCanvasLayer.value,
+);
+const trailCacheBucketMs = computed(() => (prefersTouchCanvasLayer.value ? TOUCH_TRAIL_CACHE_BUCKET_MS : DEFAULT_TRAIL_CACHE_BUCKET_MS));
+const trailBaseTimestamp = computed(() => Math.floor(displayedTime.value.getTime() / trailCacheBucketMs.value) * trailCacheBucketMs.value);
 const riskSatelliteIdSet = computed(() => new Set(props.riskSatelliteIds ?? []));
 const activeContactSatelliteIdSet = computed(
   () => new Set((props.contactLinks ?? []).filter((link) => link.status === 'IN_CONTACT').map((link) => link.satelliteId)),
@@ -153,19 +184,22 @@ const stationPoints = computed(() =>
 const trailStepMinutes = computed(() => {
   if (props.dataSaver) return 10;
   if (props.satellites.length > 80) return 12;
-  if (props.satellites.length > CANVAS_DYNAMIC_LAYER_THRESHOLD) return 6;
+  if (usesCanvasDynamicLayer.value) return 6;
   return 2;
+});
+const renderEngineLabel = computed(() => {
+  if (props.dataSaver) return 'OSM Saver';
+  return usesCanvasDynamicLayer.value ? 'Canvas 2D' : 'OSM 2D';
 });
 
 const plotted = computed(() =>
   props.satellites
     .map((entry) => {
       if (!entry.tle) return null;
-      const satrec = satellite.twoline2satrec(entry.tle.line1, entry.tle.line2);
+      const satrec = getSatrec(entry);
       const point = projectSatrec(satrec, displayedTime.value);
       if (!point) return null;
       const mapPoint = toMapPoint(point.lon, point.lat);
-      const trail = props.dataSaver ? [] : buildTrail(satrec, displayedTime.value);
       const labelBounds = satelliteLabelBounds(mapPoint, labelMapScale.value);
       const id = `catalog:${entry.satcat.catalogNumber}`;
       const tone = satelliteVisualTone(id);
@@ -178,7 +212,7 @@ const plotted = computed(() =>
         labelBounds,
         geo: point,
         tone,
-        trailSegments: splitTrail(trail),
+        trailSegments: getTrailSegments(entry, satrec),
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item)),
@@ -262,9 +296,49 @@ function projectSatrec(satrec: SatRec, timestamp: Date) {
   };
 }
 
-function buildTrail(satrec: SatRec, base: Date) {
-  const points: MapPoint[] = [];
+function getSatrec(entry: CatalogEntry) {
+  const cacheKey = satelliteCacheKey(entry);
+  const cached = satrecCache.get(cacheKey);
+  if (cached && cached.line1 === entry.tle?.line1 && cached.line2 === entry.tle?.line2) {
+    return cached.satrec;
+  }
+  const satrec = satellite.twoline2satrec(entry.tle!.line1, entry.tle!.line2);
+  satrecCache.set(cacheKey, {
+    line1: entry.tle!.line1,
+    line2: entry.tle!.line2,
+    satrec,
+  });
+  return satrec;
+}
+
+function getTrailSegments(entry: CatalogEntry, satrec: SatRec) {
+  if (props.dataSaver || !entry.tle) return [];
+  const cacheKey = satelliteCacheKey(entry);
+  const cached = trailSegmentCache.get(cacheKey);
   const stepMinutes = trailStepMinutes.value;
+  const baseTimestamp = trailBaseTimestamp.value;
+  if (
+    cached &&
+    cached.line1 === entry.tle.line1 &&
+    cached.line2 === entry.tle.line2 &&
+    cached.stepMinutes === stepMinutes &&
+    cached.baseTimestamp === baseTimestamp
+  ) {
+    return cached.segments;
+  }
+  const segments = splitTrail(buildTrail(satrec, new Date(baseTimestamp), stepMinutes));
+  trailSegmentCache.set(cacheKey, {
+    line1: entry.tle.line1,
+    line2: entry.tle.line2,
+    stepMinutes,
+    baseTimestamp,
+    segments,
+  });
+  return segments;
+}
+
+function buildTrail(satrec: SatRec, base: Date, stepMinutes = trailStepMinutes.value) {
+  const points: MapPoint[] = [];
   for (let offset = TRAIL_START_MINUTES; offset <= TRAIL_END_MINUTES; offset += stepMinutes) {
     const projected = projectSatrec(satrec, new Date(base.getTime() + offset * 60 * 1000));
     if (!projected) continue;
@@ -283,6 +357,28 @@ function toMapPoint(lon: number, lat: number) {
 
 function radiansToDegrees(value: number) {
   return (value * 180) / Math.PI;
+}
+
+function updatePointerProfile() {
+  isCoarsePointerDevice.value = Boolean(coarsePointerMediaQuery?.matches || navigator.maxTouchPoints > 0);
+}
+
+function updateWindowViewportWidth() {
+  windowViewportWidth.value = window.innerWidth;
+}
+
+function satelliteCacheKey(entry: CatalogEntry) {
+  return `catalog:${entry.satcat.catalogNumber}`;
+}
+
+function pruneOrbitCaches() {
+  const activeKeys = new Set(props.satellites.map(satelliteCacheKey));
+  for (const key of satrecCache.keys()) {
+    if (!activeKeys.has(key)) satrecCache.delete(key);
+  }
+  for (const key of trailSegmentCache.keys()) {
+    if (!activeKeys.has(key)) trailSegmentCache.delete(key);
+  }
 }
 
 function zoomIn() {
@@ -1188,6 +1284,25 @@ interface PinchState {
   lastMidpoint: PointerSnapshot;
 }
 
+interface CachedSatrec {
+  line1: string;
+  line2: string;
+  satrec: SatRec;
+}
+
+interface CachedTrailSegments {
+  line1: string;
+  line2: string;
+  stepMinutes: number;
+  baseTimestamp: number;
+  segments: MapPoint[][];
+}
+
+watch(
+  () => props.satellites.map((entry) => satelliteCacheKey(entry)).join('|'),
+  pruneOrbitCaches,
+);
+
 watch(
   () => [
     plotted.value,
@@ -1200,7 +1315,7 @@ watch(
     usesCanvasDynamicLayer.value,
   ],
   () => queueDynamicCanvasDraw(),
-  { deep: true, flush: 'post' },
+  { flush: 'post' },
 );
 
 watch(
@@ -1450,7 +1565,7 @@ watch(
       </div>
       <div>
         <span>Render</span>
-        <strong>{{ props.dataSaver ? 'OSM Saver' : 'OSM 2D' }}</strong>
+        <strong>{{ renderEngineLabel }}</strong>
       </div>
     </div>
   </div>
