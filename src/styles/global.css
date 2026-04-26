@@ -2290,19 +2290,13 @@ button.focus-inspector__chip:disabled {
 }
 
 .simulation-controls__rewind-icon {
-  display: inline-flex;
-  gap: 2px;
-  align-items: center;
-  transform: translateX(1px);
-  transition: transform 180ms ease;
-}
-
-.simulation-controls__rewind-icon span {
   display: block;
-  width: 8px;
-  height: 12px;
+  width: 10px;
+  height: 13px;
   background: currentColor;
   clip-path: polygon(0 0, 100% 50%, 0 100%);
+  transform: translateX(1px);
+  transition: transform 180ms ease;
 }
 
 .simulation-controls__rewind--active .simulation-controls__rewind-icon {

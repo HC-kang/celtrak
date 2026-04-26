@@ -148,10 +148,7 @@ function clampPlaybackSpeed(value: unknown) {
           :title="isRewinding ? '되감기' : '정방향'"
           @click.prevent="togglePlaybackDirection"
         >
-          <span class="simulation-controls__rewind-icon" aria-hidden="true">
-            <span></span>
-            <span></span>
-          </span>
+          <span class="simulation-controls__rewind-icon" aria-hidden="true"></span>
         </button>
         <input
           class="simulation-controls__speed-slider"
