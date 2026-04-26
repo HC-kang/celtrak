@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue';
 const props = defineProps<{
   livePlaybackRate: number;
   orbitTimeIso: string;
+  resumePlaybackRate?: number;
   simulationTimeIso: string | null;
 }>();
 
@@ -12,6 +13,7 @@ const emit = defineEmits<{
   'set-playback-rate': [value: number];
   shift: [hours: number];
   'reset-live': [];
+  'toggle-playback-pause': [];
 }>();
 
 const shiftControls = [-12, -6, -3, -1, -0.5, 0.5, 1, 3, 6, 12];
@@ -33,8 +35,12 @@ watch(
 
 const isLive = computed(() => !props.simulationTimeIso);
 const orbitTimestamp = computed(() => formatTimestampWithSeconds(props.orbitTimeIso));
-const isRewinding = computed(() => props.livePlaybackRate < 0);
-const playbackSpeed = computed(() => clampPlaybackSpeed(props.livePlaybackRate));
+const isPaused = computed(() => props.livePlaybackRate === 0);
+const effectivePlaybackRate = computed(() => (isPaused.value ? props.resumePlaybackRate ?? 1 : props.livePlaybackRate));
+const isRewinding = computed(() => effectivePlaybackRate.value < 0);
+const playbackSpeed = computed(() => clampPlaybackSpeed(effectivePlaybackRate.value));
+const playbackRateLabel = computed(() => `${isRewinding.value ? '-' : ''}${playbackSpeed.value}x`);
+const playbackSummary = computed(() => (isPaused.value ? `Paused · ${playbackRateLabel.value}` : playbackRateLabel.value));
 const speedProgress = computed(
   () => `${((playbackSpeed.value - minPlaybackRate) / (maxPlaybackRate - minPlaybackRate)) * 100}%`,
 );
@@ -110,7 +116,7 @@ function clampPlaybackSpeed(value: unknown) {
   <div class="simulation-controls">
     <div class="simulation-controls__summary">
       <strong>{{ isLive ? 'Live orbit' : 'Simulation orbit' }}</strong>
-      <small>{{ orbitTimestamp }} · {{ isRewinding ? '-' : '' }}{{ playbackSpeed }}x</small>
+      <small>{{ orbitTimestamp }} · {{ playbackSummary }}</small>
     </div>
     <div class="simulation-controls__row">
       <span class="simulation-controls__label">Orbit time</span>
@@ -140,15 +146,27 @@ function clampPlaybackSpeed(value: unknown) {
       <span class="simulation-controls__label">Speed</span>
       <div class="simulation-controls__speed" aria-label="Playback speed">
         <button
-          class="simulation-controls__rewind"
-          :class="{ 'simulation-controls__rewind--active': isRewinding }"
+          class="simulation-controls__transport"
+          :class="{ 'simulation-controls__transport--active': isPaused }"
+          type="button"
+          :aria-pressed="isPaused"
+          aria-label="일시정지"
+          :title="isPaused ? '재생 재개' : '일시정지'"
+          @click.prevent="emit('toggle-playback-pause')"
+        >
+          <span v-if="isPaused" class="simulation-controls__play-icon" aria-hidden="true"></span>
+          <span v-else class="simulation-controls__pause-icon" aria-hidden="true"></span>
+        </button>
+        <button
+          class="simulation-controls__transport"
+          :class="{ 'simulation-controls__transport--active': isRewinding }"
           type="button"
           :aria-pressed="isRewinding"
           aria-label="재생 방향"
           :title="isRewinding ? '되감기' : '정방향'"
           @click.prevent="togglePlaybackDirection"
         >
-          <span class="simulation-controls__rewind-icon" aria-hidden="true"></span>
+          <span class="simulation-controls__direction-icon" aria-hidden="true"></span>
         </button>
         <input
           class="simulation-controls__speed-slider"
@@ -161,7 +179,7 @@ function clampPlaybackSpeed(value: unknown) {
           aria-label="Playback speed"
           @input="setPlaybackRateFromInput"
         />
-        <output class="simulation-controls__speed-output">{{ isRewinding ? '-' : '' }}{{ playbackSpeed }}x</output>
+        <output class="simulation-controls__speed-output">{{ isPaused ? 'Paused' : playbackRateLabel }}</output>
         <div class="simulation-controls__speed-scale" aria-hidden="true">
           <span>{{ minPlaybackRate }}x</span>
           <span>{{ maxPlaybackRate }}x</span>

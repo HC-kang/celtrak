@@ -1457,11 +1457,12 @@ button.focus-inspector__chip:disabled {
 .tracking-scope__object {
   display: grid;
   gap: 10px;
-  min-height: 72px;
+  min-height: 124px;
   padding: 12px;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.055);
   border: 1px solid rgba(255, 255, 255, 0.09);
+  overflow: visible;
 }
 
 .tracking-scope__object--muted {
@@ -1482,20 +1483,39 @@ button.focus-inspector__chip:disabled {
   margin: 4px 0 0;
   color: rgba(255, 255, 255, 0.58);
   font-size: 0.72rem;
+  line-height: 1.35;
 }
 
 .tracking-scope__object-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .tracking-scope__object-actions small {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   color: rgba(255, 255, 255, 0.58);
   font-size: 0.68rem;
   font-weight: 800;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.tracking-scope__object-actions .button.panel-card__action-link {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 5px 9px;
+  font-size: 0.72rem;
 }
 
 .focus-inspector__row {
@@ -2377,12 +2397,12 @@ button.focus-inspector__chip:disabled {
 
 .simulation-controls__speed {
   display: grid;
-  grid-template-columns: auto minmax(120px, 1fr) auto;
+  grid-template-columns: auto auto minmax(120px, 1fr) auto;
   gap: 6px 12px;
   align-items: center;
 }
 
-.simulation-controls__rewind {
+.simulation-controls__transport {
   display: inline-grid;
   width: 34px;
   min-height: 34px;
@@ -2402,7 +2422,8 @@ button.focus-inspector__chip:disabled {
     box-shadow 180ms ease;
 }
 
-.simulation-controls__rewind-icon {
+.simulation-controls__direction-icon,
+.simulation-controls__play-icon {
   display: block;
   width: 10px;
   height: 13px;
@@ -2412,12 +2433,27 @@ button.focus-inspector__chip:disabled {
   transition: transform 180ms ease;
 }
 
-.simulation-controls__rewind--active .simulation-controls__rewind-icon {
+.simulation-controls__pause-icon {
+  display: grid;
+  grid-template-columns: repeat(2, 3px);
+  gap: 3px;
+  width: 9px;
+  height: 13px;
+}
+
+.simulation-controls__pause-icon::before,
+.simulation-controls__pause-icon::after {
+  content: '';
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.simulation-controls__transport--active .simulation-controls__direction-icon {
   transform: translateX(-1px) scaleX(-1);
 }
 
-.simulation-controls__rewind:hover,
-.simulation-controls__rewind--active {
+.simulation-controls__transport:hover,
+.simulation-controls__transport--active {
   color: #ffffff;
   background:
     linear-gradient(135deg, rgba(83, 177, 255, 0.34), rgba(0, 112, 204, 0.58)),
@@ -2501,7 +2537,7 @@ button.focus-inspector__chip:disabled {
 }
 
 .simulation-controls__speed-output {
-  min-width: 4.4rem;
+  min-width: 4.8rem;
   padding: 6px 10px;
   border-radius: 999px;
   color: #ffffff;
@@ -2514,7 +2550,7 @@ button.focus-inspector__chip:disabled {
 }
 
 .simulation-controls__speed-scale {
-  grid-column: 2 / -1;
+  grid-column: 3 / -1;
   display: flex;
   justify-content: space-between;
   gap: 10px;

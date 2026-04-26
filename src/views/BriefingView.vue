@@ -22,6 +22,7 @@ const OrbitGlobe3D = defineAsyncComponent(() => import('@/components/OrbitGlobe3
 const store = useAppStore();
 const viewport = useViewport();
 const livePlaybackRate = ref(1);
+const resumePlaybackRate = ref(1);
 const liveWallClockAnchor = ref(Date.now());
 const liveOrbitAnchor = ref(Date.now());
 const orbitClockTick = ref(Date.now());
@@ -374,6 +375,7 @@ function setOrbitTime(value: string | null) {
 function resetLiveOrbit() {
   const wallNow = Date.now();
   livePlaybackRate.value = 1;
+  resumePlaybackRate.value = 1;
   liveWallClockAnchor.value = wallNow;
   liveOrbitAnchor.value = wallNow;
   orbitClockTick.value = wallNow;
@@ -389,15 +391,32 @@ function anchorOrbitPlayback(orbitTimeIso: string) {
 }
 
 function setPlaybackRate(rate: number) {
+  const normalizedRate = normalizePlaybackRate(rate);
+  if (livePlaybackRate.value === 0 && normalizedRate !== 0) {
+    resumePlaybackRate.value = normalizedRate;
+    return;
+  }
+  applyPlaybackRate(normalizedRate);
+}
+
+function togglePlaybackPause() {
+  applyPlaybackRate(livePlaybackRate.value === 0 ? resumePlaybackRate.value : 0);
+}
+
+function applyPlaybackRate(rate: number) {
   const currentDisplayedMs = displayedOrbitTime.value.getTime();
   const wallNow = Date.now();
-  livePlaybackRate.value = normalizePlaybackRate(rate);
+  livePlaybackRate.value = rate;
+  if (rate !== 0) {
+    resumePlaybackRate.value = rate;
+  }
   liveWallClockAnchor.value = wallNow;
   liveOrbitAnchor.value = Number.isFinite(currentDisplayedMs) ? currentDisplayedMs : wallNow;
   orbitClockTick.value = wallNow;
 }
 
 function normalizePlaybackRate(rate: number) {
+  if (rate === 0) return 0;
   const direction = rate < 0 ? -1 : 1;
   const magnitude = Math.min(Math.max(Math.round(Math.abs(rate)), 1), 300);
   return direction * magnitude;
@@ -964,11 +983,13 @@ watch(
             <SimulationControls
               :live-playback-rate="livePlaybackRate"
               :orbit-time-iso="displayedOrbitTimeIso"
+              :resume-playback-rate="resumePlaybackRate"
               :simulation-time-iso="store.simulationTimeIso"
               @set-playback-rate="setPlaybackRate"
               @set-orbit-time="setOrbitTime"
               @shift="shiftOrbitHours"
               @reset-live="resetLiveOrbit"
+              @toggle-playback-pause="togglePlaybackPause"
             />
             <div v-if="!isMobileViewport" class="view-switcher view-switcher--desktop" aria-label="Orbit view mode">
               <span class="view-switcher__label">Map view</span>
