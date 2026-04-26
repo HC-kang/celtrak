@@ -96,16 +96,20 @@ describe('OrbitMap2D', () => {
         satellites: [satelliteEntry],
         groundStations: [station],
         contactLinks: [contactLink],
-        riskSatelliteIds: ['catalog:25544'],
+        riskSatelliteTones: { 'catalog:25544': 'critical' },
         orbitMode: 'live',
         orbitTimeIso: '2026-04-25T00:00:00.000Z',
       },
     });
 
-    expect(wrapper.find('.orbit-map__track--risk').exists()).toBe(true);
-    expect(wrapper.find('.orbit-map__satellite-core').attributes('fill')).toBe('#ff4d2d');
+    expect(wrapper.find('.orbit-map__track--critical').exists()).toBe(true);
+    expect(wrapper.find('.orbit-map__satellite-core').attributes('fill')).toBe('#c81b3a');
 
-    await wrapper.setProps({ riskSatelliteIds: [] });
+    await wrapper.setProps({ riskSatelliteTones: { 'catalog:25544': 'warn' } });
+    expect(wrapper.find('.orbit-map__track--warn').exists()).toBe(true);
+    expect(wrapper.find('.orbit-map__satellite-core').attributes('fill')).toBe('#f5c84b');
+
+    await wrapper.setProps({ riskSatelliteTones: {} });
     expect(wrapper.find('.orbit-map__track--contact').exists()).toBe(true);
     expect(wrapper.find('.orbit-map__satellite-core').attributes('fill')).toBe('#1eaedb');
 

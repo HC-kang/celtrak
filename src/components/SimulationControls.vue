@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { formatTimestamp } from '@/lib/format';
 
 const props = defineProps<{
   livePlaybackRate: number;
@@ -16,7 +15,8 @@ const emit = defineEmits<{
 }>();
 
 const shiftControls = [-12, -6, -3, -1, -0.5, 0.5, 1, 3, 6, 12];
-const playbackRates = [1, 10, 20, 30, 60, 300];
+const minPlaybackRate = 1;
+const maxPlaybackRate = 300;
 
 const inputValue = ref('');
 const isEditingTime = ref(false);
@@ -33,6 +33,9 @@ watch(
 
 const isLive = computed(() => !props.simulationTimeIso);
 const orbitTimestamp = computed(() => formatTimestampWithSeconds(props.orbitTimeIso));
+const speedProgress = computed(
+  () => `${((props.livePlaybackRate - minPlaybackRate) / (maxPlaybackRate - minPlaybackRate)) * 100}%`,
+);
 
 function submitInput() {
   if (!inputValue.value) {
@@ -57,7 +60,7 @@ function releaseInput() {
 }
 
 function syncInputValue() {
-  inputValue.value = toDateTimeLocal(props.simulationTimeIso ?? props.orbitTimeIso);
+  inputValue.value = toDateTimeLocal(props.orbitTimeIso);
 }
 
 function formatShiftLabel(hours: number) {
@@ -83,13 +86,20 @@ function formatTimestampWithSeconds(iso: string) {
     second: '2-digit',
   }).format(date);
 }
+
+function setPlaybackRateFromInput(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const nextRate = Math.round(Number(input.value));
+  if (!Number.isFinite(nextRate)) return;
+  emit('set-playback-rate', Math.min(Math.max(nextRate, minPlaybackRate), maxPlaybackRate));
+}
 </script>
 
 <template>
   <div class="simulation-controls">
     <div class="simulation-controls__summary">
       <strong>{{ isLive ? 'Live orbit' : 'Simulation orbit' }}</strong>
-      <small>{{ isLive ? `${orbitTimestamp} · ${livePlaybackRate}x` : formatTimestamp(simulationTimeIso ?? orbitTimeIso) }}</small>
+      <small>{{ orbitTimestamp }} · {{ livePlaybackRate }}x</small>
     </div>
     <div class="simulation-controls__row">
       <span class="simulation-controls__label">Orbit time</span>
@@ -116,19 +126,24 @@ function formatTimestampWithSeconds(iso: string) {
       </div>
     </div>
     <div class="simulation-controls__row">
-      <span class="simulation-controls__label">Live speed</span>
-      <div class="simulation-controls__rates" :class="{ 'simulation-controls__rates--disabled': !isLive }" aria-label="Live playback rate">
-        <button
-          v-for="rate in playbackRates"
-          :key="rate"
-          class="button button--ghost"
-          :class="{ 'button--selected': isLive && rate === livePlaybackRate }"
-          type="button"
-          :disabled="!isLive"
-          @click.prevent="emit('set-playback-rate', rate)"
-        >
-          {{ rate }}x
-        </button>
+      <span class="simulation-controls__label">Speed</span>
+      <div class="simulation-controls__speed" aria-label="Playback speed">
+        <input
+          class="simulation-controls__speed-slider"
+          type="range"
+          :min="minPlaybackRate"
+          :max="maxPlaybackRate"
+          step="1"
+          :value="livePlaybackRate"
+          :style="{ '--speed-progress': speedProgress }"
+          aria-label="Playback speed"
+          @input="setPlaybackRateFromInput"
+        />
+        <output class="simulation-controls__speed-output">{{ livePlaybackRate }}x</output>
+        <div class="simulation-controls__speed-scale" aria-hidden="true">
+          <span>{{ minPlaybackRate }}x</span>
+          <span>{{ maxPlaybackRate }}x</span>
+        </div>
       </div>
     </div>
   </div>

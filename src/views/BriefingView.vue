@@ -28,6 +28,7 @@ const orbitClockTick = ref(Date.now());
 const mapControlsOpen = ref(false);
 const mapFocusMode = ref(false);
 const focusedTarget = ref<MapFocusTarget | null>(null);
+const hoveredTarget = ref<MapFocusTarget | null>(null);
 const trackingScopeTab = ref<'groundStations' | 'trackedObjects'>('groundStations');
 const cdmScope = ref<'tracked' | 'focused' | 'all'>('tracked');
 const cdmScopeRecords = ref<ConjunctionRecord[] | null>(null);
@@ -35,6 +36,7 @@ const cdmLoading = ref(false);
 const cdmError = ref('');
 const contactPrecisionResults = ref<Record<string, ContactPrecisionResult>>({});
 const contactPrecisionPendingKeys = ref<Set<string>>(new Set());
+const addingConjunctionCatalogNumbers = ref<Set<number>>(new Set());
 let orbitClockTimer: number | null = null;
 let contactPrecisionWorker: Worker | null = null;
 let contactPrecisionRequestId = 0;
@@ -161,24 +163,26 @@ const cdmScopeConjunctions = computed(() => {
   const catalogNumbers = cdmQueryCatalogNumbers.value;
   return catalogNumbers.length ? filterConjunctionsByCatalog(records, catalogNumbers) : [];
 });
-const riskSatelliteIds = computed(() => {
-  const ids = new Set<string>();
+const riskSatelliteTones = computed<Record<string, 'warn' | 'critical'>>(() => {
+  const tones: Record<string, 'warn' | 'critical'> = {};
   for (const item of cdmScopeConjunctions.value) {
-    if (cdmSeverity(item) === 'info') continue;
-    addCatalogRiskId(ids, item.primary.catalogNumber);
-    addCatalogRiskId(ids, item.secondary.catalogNumber);
+    const severity = cdmSeverity(item);
+    if (severity === 'info') continue;
+    addCatalogRiskTone(tones, item.primary.catalogNumber, severity);
+    addCatalogRiskTone(tones, item.secondary.catalogNumber, severity);
   }
   for (const item of store.filteredDecayPredictions) {
     if (item.intersectsSelectedFleet) {
-      addCatalogRiskId(ids, item.catalogNumber);
+      addCatalogRiskTone(tones, item.catalogNumber, 'warn');
     }
   }
   for (const anomaly of store.anomalies) {
     if (anomaly.closedAt || anomaly.severity === 'INFO') continue;
-    ids.add(refKey(anomaly.satelliteRef));
+    addRiskTone(tones, refKey(anomaly.satelliteRef), anomaly.severity === 'CRITICAL' ? 'critical' : 'warn');
   }
-  return [...ids];
+  return tones;
 });
+const riskSatelliteIds = computed(() => Object.keys(riskSatelliteTones.value));
 
 const focusedLinks = computed(() => {
   const target = focusedTarget.value;
@@ -219,12 +223,11 @@ watch(isMobileViewport, (mobile) => {
   }
 });
 
-const orbitMode = computed(() => (store.simulationTimeIso ? 'simulation' : 'live'));
 const displayedOrbitTime = computed(() => {
-  if (store.simulationTimeIso) return new Date(store.simulationTimeIso);
   const elapsedMs = orbitClockTick.value - liveWallClockAnchor.value;
   return new Date(liveOrbitAnchor.value + elapsedMs * livePlaybackRate.value);
 });
+const orbitMode = computed(() => (store.simulationTimeIso ? 'simulation' : 'live'));
 const displayedOrbitTimeIso = computed(() => displayedOrbitTime.value.toISOString());
 const focusedPrecisionCandidates = computed<ContactPrecisionCandidate[]>(() => {
   if (!focusedTarget.value) return [];
@@ -248,7 +251,7 @@ const focusedPrecisionCandidates = computed<ContactPrecisionCandidate[]>(() => {
 });
 const focusedPrecisionRequestKey = computed(() => {
   if (!focusedPrecisionCandidates.value.length) return '';
-  const timeKey = store.simulationTimeIso ? displayedOrbitTimeIso.value : 'live';
+  const timeKey = store.simulationTimeIso ?? 'live';
   return [timeKey, ...focusedPrecisionCandidates.value.map(precisionCandidateSignature)].join('||');
 });
 
@@ -290,7 +293,7 @@ const intelQueue = computed(() =>
       kicker: 'Conjunction',
       title: `${item.primary.name} × ${item.secondary.name}`,
       detail: `${item.missDistanceKm.toFixed(1)} km miss · ${item.relVelocityKmS.toFixed(1)} km/s`,
-      time: formatRelative(item.tca),
+      time: formatOrbitRelative(item.tca),
       tone: cdmSeverity(item),
     })),
     ...store.filteredDecayPredictions.slice(0, 1).map((item) => ({
@@ -336,25 +339,38 @@ function setRenderMode(mode: '2d' | '3d') {
 
 function shiftOrbitHours(hours: number) {
   const baseMs = displayedOrbitTime.value.getTime();
-  store.setSimulationTime(new Date(baseMs + hours * 60 * 60 * 1000).toISOString());
+  const nextTimeIso = new Date(baseMs + hours * 60 * 60 * 1000).toISOString();
+  store.setSimulationTime(nextTimeIso);
+  anchorOrbitPlayback(nextTimeIso);
 }
 
 function setOrbitTime(value: string | null) {
-  store.setSimulationTime(value);
   if (!value) {
     resetLiveOrbit();
+    return;
   }
+  store.setSimulationTime(value);
+  anchorOrbitPlayback(value);
 }
 
 function resetLiveOrbit() {
   const wallNow = Date.now();
+  livePlaybackRate.value = 1;
   liveWallClockAnchor.value = wallNow;
   liveOrbitAnchor.value = wallNow;
   orbitClockTick.value = wallNow;
   store.resetSimulationTime();
 }
 
-function setLivePlaybackRate(rate: number) {
+function anchorOrbitPlayback(orbitTimeIso: string) {
+  const nextTimeMs = new Date(orbitTimeIso).getTime();
+  const wallNow = Date.now();
+  liveWallClockAnchor.value = wallNow;
+  liveOrbitAnchor.value = Number.isFinite(nextTimeMs) ? nextTimeMs : wallNow;
+  orbitClockTick.value = wallNow;
+}
+
+function setPlaybackRate(rate: number) {
   const currentDisplayedMs = displayedOrbitTime.value.getTime();
   const wallNow = Date.now();
   livePlaybackRate.value = rate;
@@ -382,6 +398,74 @@ function clearFocusedTarget() {
   focusedTarget.value = null;
 }
 
+function satelliteFocusTarget(id: string): MapFocusTarget {
+  return { type: 'satellite', id };
+}
+
+function groundStationFocusTarget(id: string): MapFocusTarget {
+  return { type: 'groundStation', id };
+}
+
+function conjunctionObjectTarget(item: ConjunctionRecord['primary']) {
+  return item.catalogNumber ? satelliteFocusTarget(`catalog:${item.catalogNumber}`) : null;
+}
+
+function isConjunctionObjectTracked(item: ConjunctionRecord['primary']) {
+  return Boolean(item.catalogNumber && store.selectedFleetCatalogNumbers.includes(item.catalogNumber));
+}
+
+function isAddingConjunctionObject(item: ConjunctionRecord['primary']) {
+  return Boolean(item.catalogNumber && addingConjunctionCatalogNumbers.value.has(item.catalogNumber));
+}
+
+function conjunctionChipClasses(item: ConjunctionRecord['primary']) {
+  const target = conjunctionObjectTarget(item);
+  const tracked = isConjunctionObjectTracked(item);
+  return {
+    'focus-inspector__chip--active': tracked && focusTargetMatches(focusedTarget.value, target),
+    'focus-inspector__chip--preview':
+      tracked && focusTargetMatches(hoveredTarget.value, target) && !focusTargetMatches(focusedTarget.value, target),
+    'focus-inspector__chip--addable': Boolean(item.catalogNumber && !tracked),
+    'focus-inspector__chip--loading': isAddingConjunctionObject(item),
+  };
+}
+
+function conjunctionChipLabel(item: ConjunctionRecord['primary']) {
+  if (!item.catalogNumber) return item.name;
+  return isConjunctionObjectTracked(item) ? item.name : `${item.name} 추적 추가`;
+}
+
+async function activateConjunctionObject(item: ConjunctionRecord['primary']) {
+  const target = conjunctionObjectTarget(item);
+  if (!target || !item.catalogNumber) return;
+  if (!isConjunctionObjectTracked(item)) {
+    addingConjunctionCatalogNumbers.value = new Set([...addingConjunctionCatalogNumbers.value, item.catalogNumber]);
+    try {
+      const added = await store.addCatalogNumberToFleet(item.catalogNumber);
+      if (!added) return;
+    } finally {
+      const next = new Set(addingConjunctionCatalogNumbers.value);
+      next.delete(item.catalogNumber);
+      addingConjunctionCatalogNumbers.value = next;
+    }
+  }
+  setFocusedTarget(target);
+}
+
+function setHoveredTarget(target: MapFocusTarget | null) {
+  hoveredTarget.value = target;
+}
+
+function clearHoveredTarget(target: MapFocusTarget | null) {
+  if (!target || focusTargetMatches(hoveredTarget.value, target)) {
+    hoveredTarget.value = null;
+  }
+}
+
+function focusTargetMatches(left: MapFocusTarget | null | undefined, right: MapFocusTarget | null | undefined) {
+  return Boolean(left && right && left.type === right.type && left.id === right.id);
+}
+
 function formatCountdown(seconds: number | undefined, lowerBound = false, estimated = false) {
   if (seconds === undefined) return '예측 대기';
   const hours = Math.floor(seconds / 3600);
@@ -399,6 +483,21 @@ function linkStatusLabel(link: LiveContactLink) {
   return '가시권 밖';
 }
 
+function formatOrbitRelative(value?: string) {
+  if (!value) return '알 수 없음';
+  const targetMs = new Date(value).getTime();
+  const baseMs = displayedOrbitTime.value.getTime();
+  if (!Number.isFinite(targetMs) || !Number.isFinite(baseMs)) return '알 수 없음';
+  const deltaMs = targetMs - baseMs;
+  const suffix = deltaMs >= 0 ? '후' : '전';
+  const absMinutes = Math.max(0, Math.round(Math.abs(deltaMs) / 60000));
+  if (absMinutes < 1) return `1분 미만 ${suffix}`;
+  if (absMinutes < 60) return `${absMinutes}분 ${suffix}`;
+  const hours = Math.floor(absMinutes / 60);
+  const minutes = absMinutes % 60;
+  return minutes ? `${hours}시간 ${minutes}분 ${suffix}` : `${hours}시간 ${suffix}`;
+}
+
 function cdmSeverity(item: ConjunctionRecord) {
   return classifyConjunctionSeverity(item);
 }
@@ -412,10 +511,15 @@ function filterConjunctionsByCatalog(records: ConjunctionRecord[], catalogNumber
   );
 }
 
-function addCatalogRiskId(ids: Set<string>, catalogNumber: number | undefined) {
+function addCatalogRiskTone(tones: Record<string, 'warn' | 'critical'>, catalogNumber: number | undefined, tone: 'warn' | 'critical') {
   if (catalogNumber) {
-    ids.add(`catalog:${catalogNumber}`);
+    addRiskTone(tones, `catalog:${catalogNumber}`, tone);
   }
+}
+
+function addRiskTone(tones: Record<string, 'warn' | 'critical'>, id: string, tone: 'warn' | 'critical') {
+  if (tones[id] === 'critical') return;
+  tones[id] = tone;
 }
 
 function cdmSeverityLabel(item: ConjunctionRecord) {
@@ -688,7 +792,7 @@ watch(
               :live-playback-rate="livePlaybackRate"
               :orbit-time-iso="displayedOrbitTimeIso"
               :simulation-time-iso="store.simulationTimeIso"
-              @set-playback-rate="setLivePlaybackRate"
+              @set-playback-rate="setPlaybackRate"
               @set-orbit-time="setOrbitTime"
               @shift="shiftOrbitHours"
               @reset-live="resetLiveOrbit"
@@ -724,11 +828,13 @@ watch(
             :satellites="visibleFleetEntries"
             :contact-links="contactLinks"
             :focused-target="focusedTarget"
+            :hovered-target="hoveredTarget"
             :ground-stations="store.groundStations"
             :live-playback-rate="livePlaybackRate"
             :orbit-mode="orbitMode"
             :orbit-time-iso="displayedOrbitTimeIso"
             :risk-satellite-ids="riskSatelliteIds"
+            :risk-satellite-tones="riskSatelliteTones"
             :data-saver="store.preferences.dataSaver"
             @focus-target="setFocusedTarget"
           />
@@ -737,10 +843,13 @@ watch(
             :satellites="visibleFleetEntries"
             :contact-links="contactLinks"
             :focused-target="focusedTarget"
+            :hovered-target="hoveredTarget"
             :ground-stations="store.groundStations"
+            :live-playback-rate="livePlaybackRate"
             :orbit-time-iso="displayedOrbitTimeIso"
             :orbit-mode="orbitMode"
             :risk-satellite-ids="riskSatelliteIds"
+            :risk-satellite-tones="riskSatelliteTones"
             :data-saver="store.preferences.dataSaver"
             @focus-target="setFocusedTarget"
           />
@@ -809,7 +918,41 @@ watch(
               <span>Contact Windows</span>
               <article v-for="link in focusedLinks" :key="`${link.satelliteId}-${link.groundStationId}`" class="focus-inspector__row" :class="`focus-inspector__row--${link.status.toLowerCase().replace('_', '-')}`">
                 <div>
-                  <strong>{{ link.satelliteName }} → {{ link.groundStationName }}</strong>
+                  <div class="focus-inspector__entity-line">
+                    <button
+                      class="focus-inspector__chip focus-inspector__chip--satellite"
+                      :class="{
+                        'focus-inspector__chip--active': focusTargetMatches(focusedTarget, satelliteFocusTarget(link.satelliteId)),
+                        'focus-inspector__chip--preview': focusTargetMatches(hoveredTarget, satelliteFocusTarget(link.satelliteId)) && !focusTargetMatches(focusedTarget, satelliteFocusTarget(link.satelliteId)),
+                      }"
+                      type="button"
+                      :aria-pressed="focusTargetMatches(focusedTarget, satelliteFocusTarget(link.satelliteId))"
+                      @click="setFocusedTarget(satelliteFocusTarget(link.satelliteId))"
+                      @mouseenter="setHoveredTarget(satelliteFocusTarget(link.satelliteId))"
+                      @mouseleave="clearHoveredTarget(satelliteFocusTarget(link.satelliteId))"
+                      @focus="setHoveredTarget(satelliteFocusTarget(link.satelliteId))"
+                      @blur="clearHoveredTarget(satelliteFocusTarget(link.satelliteId))"
+                    >
+                      {{ link.satelliteName }}
+                    </button>
+                    <span aria-hidden="true">→</span>
+                    <button
+                      class="focus-inspector__chip focus-inspector__chip--ground-station"
+                      :class="{
+                        'focus-inspector__chip--active': focusTargetMatches(focusedTarget, groundStationFocusTarget(link.groundStationId)),
+                        'focus-inspector__chip--preview': focusTargetMatches(hoveredTarget, groundStationFocusTarget(link.groundStationId)) && !focusTargetMatches(focusedTarget, groundStationFocusTarget(link.groundStationId)),
+                      }"
+                      type="button"
+                      :aria-pressed="focusTargetMatches(focusedTarget, groundStationFocusTarget(link.groundStationId))"
+                      @click="setFocusedTarget(groundStationFocusTarget(link.groundStationId))"
+                      @mouseenter="setHoveredTarget(groundStationFocusTarget(link.groundStationId))"
+                      @mouseleave="clearHoveredTarget(groundStationFocusTarget(link.groundStationId))"
+                      @focus="setHoveredTarget(groundStationFocusTarget(link.groundStationId))"
+                      @blur="clearHoveredTarget(groundStationFocusTarget(link.groundStationId))"
+                    >
+                      {{ link.groundStationName }}
+                    </button>
+                  </div>
                   <p>{{ linkStatusLabel(link) }} · el {{ link.elevationDeg.toFixed(1) }}° · az {{ link.azimuthDeg.toFixed(0) }}°</p>
                 </div>
               </article>
@@ -821,7 +964,44 @@ watch(
               <article v-for="item in focusedConjunctions" :key="item.id" class="focus-inspector__row" :class="`focus-inspector__row--${cdmSeverity(item)}`">
                 <div>
                   <strong>{{ cdmSeverityLabel(item) }} · {{ item.missDistanceKm.toFixed(2) }} km</strong>
-                  <p>{{ item.primary.name }} × {{ item.secondary.name }} · {{ formatRelative(item.tca) }}</p>
+                  <div class="focus-inspector__entity-line focus-inspector__entity-line--subtle">
+                    <button
+                      v-if="conjunctionObjectTarget(item.primary)"
+                      class="focus-inspector__chip focus-inspector__chip--satellite"
+                      :class="conjunctionChipClasses(item.primary)"
+                      type="button"
+                      :aria-label="conjunctionChipLabel(item.primary)"
+                      :aria-pressed="isConjunctionObjectTracked(item.primary) && focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.primary))"
+                      :disabled="isAddingConjunctionObject(item.primary)"
+                      @click="activateConjunctionObject(item.primary)"
+                      @mouseenter="setHoveredTarget(conjunctionObjectTarget(item.primary))"
+                      @mouseleave="clearHoveredTarget(conjunctionObjectTarget(item.primary))"
+                      @focus="setHoveredTarget(conjunctionObjectTarget(item.primary))"
+                      @blur="clearHoveredTarget(conjunctionObjectTarget(item.primary))"
+                    >
+                      {{ item.primary.name }}
+                    </button>
+                    <span v-else class="focus-inspector__chip focus-inspector__chip--static">{{ item.primary.name }}</span>
+                    <span aria-hidden="true">×</span>
+                    <button
+                      v-if="conjunctionObjectTarget(item.secondary)"
+                      class="focus-inspector__chip focus-inspector__chip--satellite"
+                      :class="conjunctionChipClasses(item.secondary)"
+                      type="button"
+                      :aria-label="conjunctionChipLabel(item.secondary)"
+                      :aria-pressed="isConjunctionObjectTracked(item.secondary) && focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.secondary))"
+                      :disabled="isAddingConjunctionObject(item.secondary)"
+                      @click="activateConjunctionObject(item.secondary)"
+                      @mouseenter="setHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                      @mouseleave="clearHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                      @focus="setHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                      @blur="clearHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                    >
+                      {{ item.secondary.name }}
+                    </button>
+                    <span v-else class="focus-inspector__chip focus-inspector__chip--static">{{ item.secondary.name }}</span>
+                  </div>
+                  <p>{{ formatOrbitRelative(item.tca) }}</p>
                 </div>
               </article>
               <p v-if="!focusedConjunctions.length" class="empty-state">근접경고 없음</p>
@@ -1042,7 +1222,7 @@ watch(
             <strong>{{ cdmSeverityLabel(item) }} · {{ item.primary.name }} × {{ item.secondary.name }}</strong>
             <p>{{ item.missDistanceKm.toFixed(1) }} km miss · {{ item.relVelocityKmS.toFixed(1) }} km/s</p>
           </div>
-          <small>{{ formatRelative(item.tca) }}</small>
+          <small>{{ formatOrbitRelative(item.tca) }}</small>
         </article>
         <article v-if="!cdmLoading && !cdmScopeConjunctions.length" class="stack-list__item">
           <div>

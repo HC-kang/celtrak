@@ -77,3 +77,18 @@
 - 2026-04-26: Contact Windows countdowns that show whole-minute values like `LOS까지 00:03:00` usually come from `buildLiveContactLinks` fallback threshold scans, not display formatting. The fallback scans LOS in 60s steps, AOS in 120s steps, and caches by minute when no matching active/next pass prediction exists; el/az remains live because look angles are recomputed at the current displayed orbit time.
 - 2026-04-26: Pass predictions now record the station `elevationMaskDeg` used for AOS/LOS, and live contact links ignore predictions whose mask no longer matches the current station setting. Fallback countdowns are flagged as estimated so Briefing labels them with `약`; pass predictions are cleared when a new worker request starts so station-mask edits do not leave stale windows in the UI while recomputing.
 - 2026-04-26: Keep broad pass prediction in a worker, but refine only focused Contact Windows with a separate client worker. The precision worker scans the focused link in 15s brackets, binary-searches to ~1s, returns an event timestamp, and Briefing keeps the previous countdown visible with `(재계산 중)` while recomputing.
+- 2026-04-26: User clarified satellite name rect omission is acceptable in dense 2D canvas mode, but 3D rendered satellites should all expose labels. More was merged into Ground Stations to keep mobile bottom tabs to one row; `/more` now redirects to `/stations`.
+
+- 2026-04-26: Focus Inspector entity names should act as lightweight focus chips. Hover/focus on chips previews the target on 2D/3D maps with a cyan preview state, while the committed focus remains white so preview and focus are visually distinct.
+
+- 2026-04-26: Map view colors should mirror Focus Inspector semantics. Use critical red `#c81b3a`, warn amber `#f5c84b`, active-contact cyan `#1eaedb`, tracked blue `#53b1ff`, focused white, and dim gray for idle ground stations; avoid reusing warn/critical colors for contact-window AOS/LOS.
+
+- 2026-04-26: Desktop `AppShell` sidebar can collapse to an 86px rail. Keep nav usable through marker buttons with hover/focus labels, persist the state in localStorage, and avoid overlapping the collapsed rail toggle with the brand mark.
+
+- 2026-04-26: Orbit controls should treat returning to Live as a reset to real-time 1x. CDM relative labels in Briefing should be based on displayed ORBIT TIME and prefer hour/minute countdowns instead of day-level labels. When a satellite is focused, both 2D and 3D map views should keep following that moving target.
+
+- 2026-04-26: CDM Focus Inspector chips can represent untracked catalog objects; clicking an untracked CDM chip should add that catalog object to the selected fleet before focusing it. Keep CDM chip rows single-line with truncation, and keep collapsed sidebar controls fully inside the rail with high-z hover labels.
+
+- 2026-04-26: Orbit Time jumps and manually applied times should enter a flowing simulation playback state, not a frozen snapshot. The playback speed applies to both live and simulation time, the UI label is `Speed`, and the control is a 1x-300x slider rather than fixed preset buttons.
+
+- 2026-04-26: Rebase with `main` combined flowing simulation playback with focused Contact Window precision. Precision worker request keys should use the simulation anchor (`store.simulationTimeIso`) instead of the displayed ticking orbit time, otherwise flowing simulation mode can re-request precision every orbit-clock tick.

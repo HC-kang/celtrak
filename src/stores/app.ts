@@ -254,11 +254,11 @@ export const useAppStore = defineStore('app', () => {
 
   async function addCatalogToFleet(entry: CatalogEntry, fleetId = selectedFleet.value?.id) {
     const fleet = fleets.value.find((item) => item.id === fleetId);
-    if (!fleet) return;
+    if (!fleet) return null;
     const exists = fleet.memberRefs.some(
       (member) => member.refType === 'catalog' && member.catalogNumber === entry.satcat.catalogNumber,
     );
-    if (exists) return;
+    if (exists) return entry;
     const nextFleet: UserFleet = {
       ...fleet,
       memberRefs: [
@@ -271,6 +271,17 @@ export const useAppStore = defineStore('app', () => {
     fleets.value = await fleetStore.listFleets();
     mergeCatalogEntries([entry]);
     await hydrateOpsStatuses();
+    return entry;
+  }
+
+  async function addCatalogNumberToFleet(catalogNumber: number, fleetId = selectedFleet.value?.id) {
+    const existing = catalog.value.find((entry) => entry.satcat.catalogNumber === catalogNumber);
+    if (existing) {
+      return addCatalogToFleet(existing, fleetId);
+    }
+    const [entry] = await gateway.getCatalog({ catalogNumbers: [catalogNumber] });
+    if (!entry) return null;
+    return addCatalogToFleet(entry, fleetId);
   }
 
   async function createFleet(name: string, description?: string) {
@@ -581,6 +592,7 @@ export const useAppStore = defineStore('app', () => {
     updatePreferences,
     weather,
     addCatalogToFleet,
+    addCatalogNumberToFleet,
     applyAutomaticPreferences,
     removeFleetMember,
   };
