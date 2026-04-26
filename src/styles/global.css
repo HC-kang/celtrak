@@ -1342,6 +1342,13 @@ button.focus-inspector__chip:focus-visible,
   background: rgba(30, 174, 219, 0.1);
 }
 
+.focus-inspector__chip--unavailable {
+  border-color: rgba(var(--warn-rgb), 0.58);
+  border-style: dashed;
+  color: #ffe8a0;
+  background: rgba(var(--warn-rgb), 0.1);
+}
+
 button.focus-inspector__chip--addable::after {
   content: "+";
   display: inline-grid;

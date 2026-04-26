@@ -51,6 +51,7 @@ interface CdmFeedbackToast {
   state: 'pending' | 'success' | 'error';
   message: string;
   detail?: string;
+  retryable?: boolean;
 }
 
 onMounted(() => {
@@ -427,12 +428,11 @@ function groundStationFocusTarget(id: string): MapFocusTarget {
 }
 
 function conjunctionObjectTarget(item: ConjunctionRecord['primary']) {
-  return isResolvableConjunctionObject(item) ? satelliteFocusTarget(`catalog:${item.catalogNumber}`) : null;
+  return item.catalogNumber ? satelliteFocusTarget(`catalog:${item.catalogNumber}`) : null;
 }
 
-function isResolvableConjunctionObject(item: ConjunctionRecord['primary']): item is ConjunctionRecord['primary'] & { catalogNumber: number } {
-  const name = item.name.trim().toUpperCase();
-  return Boolean(item.catalogNumber && name && name !== 'UNKNOWN');
+function isUnresolvedConjunctionObject(item: ConjunctionRecord['primary']) {
+  return Boolean(item.catalogNumber && item.name.trim().toUpperCase() === 'UNKNOWN');
 }
 
 function isConjunctionObjectTracked(item: ConjunctionRecord['primary']) {
@@ -450,59 +450,73 @@ function conjunctionChipClasses(item: ConjunctionRecord['primary']) {
     'focus-inspector__chip--active': tracked && focusTargetMatches(focusedTarget.value, target),
     'focus-inspector__chip--preview':
       tracked && focusTargetMatches(hoveredTarget.value, target) && !focusTargetMatches(focusedTarget.value, target),
-    'focus-inspector__chip--addable': Boolean(target && !tracked),
+    'focus-inspector__chip--addable': Boolean(target && !tracked && !isUnresolvedConjunctionObject(item)),
+    'focus-inspector__chip--unavailable': Boolean(target && !tracked && isUnresolvedConjunctionObject(item)),
     'focus-inspector__chip--loading': isAddingConjunctionObject(item),
   };
 }
 
 function conjunctionChipLabel(item: ConjunctionRecord['primary']) {
   if (!item.catalogNumber) return item.name;
+  if (isUnresolvedConjunctionObject(item)) return `${item.name} 추적 추가 불가`;
   return isConjunctionObjectTracked(item) ? item.name : `${item.name} 추적 추가`;
 }
 
 async function activateConjunctionObject(item: ConjunctionRecord['primary']) {
   const target = conjunctionObjectTarget(item);
   if (!target || !item.catalogNumber) return;
-  if (!isConjunctionObjectTracked(item)) {
-    showCdmFeedback({
-      catalogNumber: item.catalogNumber,
-      name: item.name,
-      state: 'pending',
-      message: `${item.name} 추적 추가를 요청했습니다.`,
-      detail: `NORAD ${item.catalogNumber} catalog/TLE 조회 중`,
-    });
-    addingConjunctionCatalogNumbers.value = new Set([...addingConjunctionCatalogNumbers.value, item.catalogNumber]);
-    let addedEntry: CatalogEntry | null = null;
-    try {
-      const added = await store.addCatalogNumberToFleet(item.catalogNumber);
-      if (!added) throw new Error('선택된 플릿을 찾을 수 없습니다.');
-      addedEntry = added;
-    } catch (error) {
-      showCdmFeedback({
-        catalogNumber: item.catalogNumber,
-        name: item.name,
-        state: 'error',
-        message: `${item.name} 추적 추가에 실패했습니다.`,
-        detail: cdmAddErrorDetail(error, item.catalogNumber),
-      });
-      return;
-    } finally {
-      const next = new Set(addingConjunctionCatalogNumbers.value);
-      next.delete(item.catalogNumber);
-      addingConjunctionCatalogNumbers.value = next;
-    }
-    if (!addedEntry) return;
+  if (isConjunctionObjectTracked(item)) {
     setFocusedTarget(target);
+    return;
+  }
+  if (isUnresolvedConjunctionObject(item)) {
     showCdmFeedback({
       catalogNumber: item.catalogNumber,
       name: item.name,
-      state: 'success',
-      message: `${addedEntry.satcat.objectName} 추적을 추가했습니다.`,
-      detail: `NORAD ${addedEntry.satcat.catalogNumber} · ${addedEntry.tle ? 'TLE 포함' : 'SATCAT만 수신'}`,
+      state: 'error',
+      message: `${item.name} 추적 추가를 할 수 없습니다.`,
+      detail: `SOCRATES CDM에는 위험 객체로 보고됐지만 CelesTrak catalog/TLE 식별자가 공개되지 않아 지도 추적에 추가할 수 없습니다.`,
+      retryable: false,
     });
     return;
   }
+
+  showCdmFeedback({
+    catalogNumber: item.catalogNumber,
+    name: item.name,
+    state: 'pending',
+    message: `${item.name} 추적 추가를 요청했습니다.`,
+    detail: `NORAD ${item.catalogNumber} catalog/TLE 조회 중`,
+  });
+  addingConjunctionCatalogNumbers.value = new Set([...addingConjunctionCatalogNumbers.value, item.catalogNumber]);
+  let addedEntry: CatalogEntry | null = null;
+  try {
+    const added = await store.addCatalogNumberToFleet(item.catalogNumber);
+    if (!added) throw new Error('선택된 플릿을 찾을 수 없습니다.');
+    addedEntry = added;
+  } catch (error) {
+    showCdmFeedback({
+      catalogNumber: item.catalogNumber,
+      name: item.name,
+      state: 'error',
+      message: `${item.name} 추적 추가에 실패했습니다.`,
+      detail: cdmAddErrorDetail(error, item.catalogNumber),
+    });
+    return;
+  } finally {
+    const next = new Set(addingConjunctionCatalogNumbers.value);
+    next.delete(item.catalogNumber);
+    addingConjunctionCatalogNumbers.value = next;
+  }
+  if (!addedEntry) return;
   setFocusedTarget(target);
+  showCdmFeedback({
+    catalogNumber: item.catalogNumber,
+    name: item.name,
+    state: 'success',
+    message: `${addedEntry.satcat.objectName} 추적을 추가했습니다.`,
+    detail: `NORAD ${addedEntry.satcat.catalogNumber} · ${addedEntry.tle ? 'TLE 포함' : 'SATCAT만 수신'}`,
+  });
 }
 
 async function retryCdmFeedback(toast: CdmFeedbackToast) {
@@ -849,7 +863,7 @@ watch(
             <p v-if="toast.detail">{{ toast.detail }}</p>
           </div>
           <button
-            v-if="toast.state === 'error'"
+            v-if="toast.state === 'error' && toast.retryable !== false"
             class="app-toast__action"
             type="button"
             @click="retryCdmFeedback(toast)"
