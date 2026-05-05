@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
 import LoadingState from '@/components/LoadingState.vue';
+import { usePwaInstallPrompt } from '@/composables/usePwaInstallPrompt';
 import { useViewport } from '@/composables/useViewport';
 import { useAppStore } from '@/stores/app';
 import { formatTimestamp } from '@/lib/format';
@@ -9,6 +10,7 @@ import { formatTimestamp } from '@/lib/format';
 const route = useRoute();
 const viewport = useViewport();
 const store = useAppStore();
+const pwaInstall = usePwaInstallPrompt();
 
 const SIDEBAR_COLLAPSED_KEY = 'celtrak:sidebar-collapsed';
 
@@ -33,6 +35,9 @@ const shellClass = computed(() => [
   { 'app-shell--sidebar-collapsed': usesSidebar.value && sidebarCollapsed.value },
 ]);
 const isInitialLoading = computed(() => store.loading && !store.lastSyncedAt);
+const canInstallPwa = computed(() => pwaInstall.canInstall.value);
+const isInstallingPwa = computed(() => pwaInstall.isInstalling.value);
+const hasTopbarActions = computed(() => canInstallPwa.value || store.loading || store.updateAvailable || store.offline);
 
 onMounted(() => {
   sidebarCollapsed.value = readSavedSidebarState();
@@ -80,6 +85,10 @@ function readSavedSidebarState() {
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value;
+}
+
+function installPwa() {
+  void pwaInstall.install();
 }
 
 function currentScrollY() {
@@ -151,11 +160,22 @@ function updateBottomTabsVisibility() {
         <button v-if="!usesSidebar" class="icon-button" aria-label="메뉴" @click="drawerOpen = !drawerOpen">
           ☰
         </button>
-        <div>
+        <div class="topbar__title">
           <p class="eyebrow">{{ route.name }}</p>
           <h1>CelesTrak Orbit Lab Pro</h1>
         </div>
-        <div v-if="store.loading || store.updateAvailable || store.offline" class="topbar__actions">
+        <div v-if="hasTopbarActions" class="topbar__actions">
+          <button
+            v-if="canInstallPwa"
+            type="button"
+            class="topbar__install-button"
+            :disabled="isInstallingPwa"
+            aria-label="Celtrak을 앱으로 설치"
+            @click="installPwa"
+          >
+            <span class="topbar__install-dot" aria-hidden="true"></span>
+            <span>{{ isInstallingPwa ? 'Installing' : 'Install app' }}</span>
+          </button>
           <span v-if="store.loading" class="topbar__chip topbar__chip--loading" role="status" aria-live="polite">
             <span class="loading-dot" aria-hidden="true"></span>
             <span class="topbar__chip-text">{{ store.loadingMessage }}</span>
