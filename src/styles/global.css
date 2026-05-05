@@ -437,10 +437,51 @@ textarea:focus-visible {
   letter-spacing: -0.02em;
 }
 
+.topbar__title {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
 .topbar__actions {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.topbar__install-button {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 14px;
+  border: 1px solid rgba(30, 174, 219, 0.48);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(0, 112, 204, 0.32), rgba(255, 255, 255, 0.08));
+  color: var(--surface);
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 14px 36px rgba(0, 112, 204, 0.2);
+}
+
+.topbar__install-button:hover:not(:disabled),
+.topbar__install-button:focus-visible {
+  border-color: rgba(255, 255, 255, 0.72);
+  background: linear-gradient(135deg, rgba(0, 112, 204, 0.46), rgba(30, 174, 219, 0.18));
+}
+
+.topbar__install-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.topbar__install-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--interaction-cyan);
+  box-shadow: 0 0 0 4px rgba(30, 174, 219, 0.16);
 }
 
 .topbar__chip {
@@ -4365,7 +4406,20 @@ button.focus-inspector__chip:disabled {
   }
 
   .topbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
     align-items: flex-start;
+    justify-content: flex-start;
+  }
+
+  .topbar > .icon-button {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .topbar__title {
+    grid-column: 2;
+    grid-row: 1;
   }
 
   .panel-card__header {
@@ -4379,8 +4433,16 @@ button.focus-inspector__chip:disabled {
   }
 
   .topbar__actions {
+    grid-column: 2;
+    grid-row: 2;
     flex-wrap: wrap;
-    justify-content: flex-end;
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+
+  .topbar__install-button {
+    min-height: 40px;
+    padding-inline: 13px;
   }
 
   .war-room__header,
