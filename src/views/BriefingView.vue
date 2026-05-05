@@ -1238,11 +1238,14 @@ function cdmFeedbackStateLabel(state: CdmFeedbackToast['state']) {
 function cdmAddErrorDetail(error: unknown, catalogNumber: number) {
   const message = error instanceof Error ? error.message : '';
   if (message.includes('TLE/SATCAT을 찾지 못했습니다')) return message;
+  if (message.includes('catalog snapshot unavailable')) {
+    return `내부 catalog snapshot이 아직 준비되지 않아 NORAD ${catalogNumber} 조회를 완료하지 못했습니다. 잠시 후 재시도하세요.`;
+  }
   if (message.includes('timed out')) {
-    return `CelesTrak 응답 지연으로 NORAD ${catalogNumber} 조회가 중단됐습니다. 잠시 후 재시도하세요.`;
+    return `Catalog 조회 응답 지연으로 NORAD ${catalogNumber} 조회가 중단됐습니다. 잠시 후 재시도하세요.`;
   }
   if (message.includes('returned 502') || message.includes('API upstream failed')) {
-    return `CelesTrak upstream 조회가 실패했습니다. 잠시 후 재시도하세요.`;
+    return `공개 catalog 데이터 조회가 실패했습니다. 잠시 후 재시도하세요.`;
   }
   return message || 'catalog/TLE 조회 중 알 수 없는 오류가 발생했습니다.';
 }
