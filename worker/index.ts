@@ -65,13 +65,45 @@ interface ConjunctionRecord {
   note?: string;
 }
 
+interface NoaaScaleSummary {
+  scale: number | null;
+  label: string;
+  text?: string;
+  observedAt?: string;
+  minorProbabilityPct?: number | null;
+  majorProbabilityPct?: number | null;
+  probabilityPct?: number | null;
+  source: 'NOAA_SWPC' | 'DERIVED';
+}
+
+interface NoaaScaleSnapshot {
+  observedAt?: string;
+  current: {
+    r: NoaaScaleSummary;
+    s: NoaaScaleSummary;
+    g: NoaaScaleSummary;
+  };
+  forecast?: Array<{
+    t: string;
+    r?: NoaaScaleSummary;
+    s?: NoaaScaleSummary;
+    g?: NoaaScaleSummary;
+  }>;
+  previous?: {
+    t: string;
+    r?: NoaaScaleSummary;
+    s?: NoaaScaleSummary;
+    g?: NoaaScaleSummary;
+  };
+}
+
 const CELESTRAK_GROUPS = [
   { key: 'stations', label: 'Stations' },
   { key: 'weather', label: 'Weather' },
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v13';
+const API_CACHE_VERSION = 'v14';
 const CACHEABLE_HEADER = 'x-celtrak-cacheable';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
@@ -98,6 +130,8 @@ const SOCRATES_SNAPSHOT_MAX_CHUNKS = 64;
 const SOCRATES_SNAPSHOT_CHUNK_TIMEOUT_MS = 15_000;
 const SOCRATES_SNAPSHOT_STALE_MS = 4 * 60 * 60 * 1000;
 const CELESTRAK_ORIGINS = ['http://celestrak.org', 'https://celestrak.org'] as const;
+const SWPC_NOAA_SCALES_URL = 'https://services.swpc.noaa.gov/products/noaa-scales.json';
+const SWPC_PROTON_FLUX_URL = 'https://services.swpc.noaa.gov/json/goes/primary/integral-protons-3-day.json';
 const CELESTRAK_REQUEST_HEADERS = {
   accept: 'text/plain, text/csv, application/json, */*',
 };
@@ -1404,21 +1438,29 @@ function normalizeOpsStatus(value: unknown) {
 
 async function getSpaceWeatherSummary() {
   const fetchedAt = new Date().toISOString();
-  const [xrayResult, kpResult, alertsResult] = await Promise.allSettled([
+  const [xrayResult, kpResult, alertsResult, scalesResult, protonResult] = await Promise.allSettled([
     fetchJson<unknown[]>('https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json'),
     fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json'),
     fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/alerts.json'),
+    fetchJson<unknown>(SWPC_NOAA_SCALES_URL),
+    fetchJson<unknown[]>(SWPC_PROTON_FLUX_URL),
   ]);
 
   const xrayRows = xrayResult.status === 'fulfilled' && Array.isArray(xrayResult.value) ? xrayResult.value : [];
   const kpRows = kpResult.status === 'fulfilled' && Array.isArray(kpResult.value) ? kpResult.value : [];
+  const protonRows = protonResult.status === 'fulfilled' && Array.isArray(protonResult.value) ? protonResult.value : [];
   const xraySeries = normalizeXraySeries(xrayRows);
   const latestFlux = xraySeries.at(-1)?.flux ?? null;
   const kp = normalizeKp(kpRows);
+  const proton = normalizeProtonFlux(protonRows);
+  const noaaScales = scalesResult.status === 'fulfilled' ? normalizeNoaaScales(scalesResult.value) : null;
+  const scales = noaaScales ?? deriveNoaaScales({ fetchedAt, xrayFlux: latestFlux, protonPfu: proton.currentPfu, kp: kp.current });
   const xrayMissing = !xraySeries.length;
   const kpMissing = kp.current === null && !kp.forecast.length;
+  const protonMissing = proton.currentPfu === null;
+  const scalesMissing = !noaaScales;
 
-  if (xrayMissing && kpMissing) return createSpaceWeatherFallback();
+  if (xrayMissing && kpMissing && protonMissing && scalesMissing) return createSpaceWeatherFallback();
 
   const notices = alertsResult.status === 'fulfilled' ? normalizeAlerts(alertsResult.value) : [];
   const sourceNotices: Array<{ issuedAt: string; type: string; text: string }> = [];
@@ -1436,6 +1478,20 @@ async function getSpaceWeatherSummary() {
       text: 'SWPC Kp feed unavailable; showing remaining public space weather data.',
     });
   }
+  if (protonMissing) {
+    sourceNotices.push({
+      issuedAt: fetchedAt,
+      type: 'SOURCE_PARTIAL',
+      text: 'SWPC GOES proton feed unavailable; radiation storm scale may be incomplete.',
+    });
+  }
+  if (scalesMissing) {
+    sourceNotices.push({
+      issuedAt: fetchedAt,
+      type: 'SOURCE_PARTIAL',
+      text: 'SWPC NOAA Scales summary unavailable; deriving current R/S/G from public X-ray, proton, and Kp feeds.',
+    });
+  }
 
   return {
     origin: 'OSINT',
@@ -1451,6 +1507,8 @@ async function getSpaceWeatherSummary() {
       forecast: kp.forecast,
       storm: classifyKpStorm(kp.current),
     },
+    proton,
+    scales,
     notices: [...sourceNotices, ...notices].slice(0, 5),
   };
 }
@@ -1493,6 +1551,156 @@ function normalizeKpRows(raw: unknown[]) {
     .filter(Array.isArray)
     .map((row) => ({ t: String(row[timeIndex >= 0 ? timeIndex : 0]), kp: Number(row[kpIndex >= 0 ? kpIndex : 1]) }))
     .filter((row) => row.t && Number.isFinite(row.kp));
+}
+
+function normalizeProtonFlux(raw: unknown[]) {
+  const rows = raw
+    .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
+    .filter((row) => cleanString(row.energy) === '>=10 MeV')
+    .map((row) => ({
+      t: cleanString(row.time_tag),
+      flux: numberFromUnknown(row.flux),
+    }))
+    .filter((row): row is { t: string; flux: number } => Boolean(row.t) && Number.isFinite(row.flux))
+    .sort((left, right) => left.t.localeCompare(right.t));
+
+  const latest = rows.at(-1);
+  return {
+    currentPfu: latest?.flux ?? null,
+    energy: '>=10 MeV',
+    observedAt: latest?.t,
+  };
+}
+
+function normalizeNoaaScales(raw: unknown): NoaaScaleSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const current = normalizeNoaaScaleRecord(record['0'], 'NOAA_SWPC');
+  if (!current) return null;
+
+  const forecast = ['1', '2', '3']
+    .map((key) => normalizeNoaaScaleRecord(record[key], 'NOAA_SWPC'))
+    .filter((item): item is NonNullable<ReturnType<typeof normalizeNoaaScaleRecord>> => Boolean(item))
+    .map((item) => ({
+      t: item.t,
+      r: item.r,
+      s: item.s,
+      g: item.g,
+    }));
+  const previous = normalizeNoaaScaleRecord(record['-1'], 'NOAA_SWPC');
+
+  return {
+    observedAt: current.t,
+    current: {
+      r: current.r,
+      s: current.s,
+      g: current.g,
+    },
+    forecast: forecast.length ? forecast : undefined,
+    previous: previous
+      ? {
+          t: previous.t,
+          r: previous.r,
+          s: previous.s,
+          g: previous.g,
+        }
+      : undefined,
+  };
+}
+
+function normalizeNoaaScaleRecord(raw: unknown, source: NoaaScaleSummary['source']) {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const t = swpcDateTime(record.DateStamp, record.TimeStamp);
+  if (!t) return null;
+  return {
+    t,
+    r: normalizeNoaaScale('R', record.R, t, source),
+    s: normalizeNoaaScale('S', record.S, t, source),
+    g: normalizeNoaaScale('G', record.G, t, source),
+  };
+}
+
+function normalizeNoaaScale(kind: 'R' | 'S' | 'G', raw: unknown, observedAt: string, source: NoaaScaleSummary['source']): NoaaScaleSummary {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const scale = numberFromUnknown(record.Scale);
+  return {
+    scale: scale ?? null,
+    label: scale === undefined ? `${kind}—` : `${kind}${scale}`,
+    text: cleanString(record.Text) ?? (scale === undefined ? undefined : noaaScaleText(kind, scale)),
+    observedAt,
+    minorProbabilityPct: numberFromUnknown(record.MinorProb) ?? null,
+    majorProbabilityPct: numberFromUnknown(record.MajorProb) ?? null,
+    probabilityPct: numberFromUnknown(record.Prob) ?? null,
+    source,
+  };
+}
+
+function swpcDateTime(dateValue: unknown, timeValue: unknown) {
+  const date = cleanString(dateValue);
+  if (!date) return undefined;
+  const time = cleanString(timeValue) ?? '00:00:00';
+  const parsed = new Date(`${date}T${time.replace(/\s+/g, '')}Z`);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : undefined;
+}
+
+function deriveNoaaScales(options: { fetchedAt: string; xrayFlux: number | null; protonPfu: number | null; kp: number | null }): NoaaScaleSnapshot {
+  const rScale = classifyRadioBlackoutScale(options.xrayFlux);
+  const sScale = classifyRadiationStormScale(options.protonPfu);
+  const gScale = classifyGeomagneticScale(options.kp);
+  return {
+    observedAt: options.fetchedAt,
+    current: {
+      r: derivedNoaaScale('R', rScale, options.fetchedAt),
+      s: derivedNoaaScale('S', sScale, options.fetchedAt),
+      g: derivedNoaaScale('G', gScale, options.fetchedAt),
+    },
+  };
+}
+
+function derivedNoaaScale(kind: 'R' | 'S' | 'G', scale: number | null, observedAt: string): NoaaScaleSummary {
+  return {
+    scale,
+    label: scale === null ? `${kind}—` : `${kind}${scale}`,
+    text: scale === null ? undefined : noaaScaleText(kind, scale),
+    observedAt,
+    minorProbabilityPct: null,
+    majorProbabilityPct: null,
+    probabilityPct: null,
+    source: 'DERIVED',
+  };
+}
+
+function classifyRadioBlackoutScale(flux: number | null) {
+  if (!flux || flux < 1e-5) return 0;
+  if (flux >= 2e-3) return 5;
+  if (flux >= 1e-3) return 4;
+  if (flux >= 1e-4) return 3;
+  if (flux >= 5e-5) return 2;
+  return 1;
+}
+
+function classifyRadiationStormScale(protonPfu: number | null) {
+  if (protonPfu === null || protonPfu < 10) return 0;
+  if (protonPfu >= 100_000) return 5;
+  if (protonPfu >= 10_000) return 4;
+  if (protonPfu >= 1_000) return 3;
+  if (protonPfu >= 100) return 2;
+  return 1;
+}
+
+function classifyGeomagneticScale(kp: number | null) {
+  if (kp === null || kp < 5) return 0;
+  if (kp >= 9) return 5;
+  if (kp >= 8) return 4;
+  if (kp >= 7) return 3;
+  if (kp >= 6) return 2;
+  return 1;
+}
+
+function noaaScaleText(kind: 'R' | 'S' | 'G', scale: number) {
+  const labels = kind === 'R' ? ['none', 'minor', 'moderate', 'strong', 'severe', 'extreme'] : ['none', 'minor', 'moderate', 'strong', 'severe', 'extreme'];
+  return labels[Math.min(Math.max(Math.round(scale), 0), labels.length - 1)];
 }
 
 function normalizeAlerts(raw: unknown[]) {
@@ -1636,6 +1844,8 @@ function createSpaceWeatherFallback() {
     fetchedAt,
     xray: { currentWm2: null, series: [] },
     kp: { current: null, forecast: [], storm: 'QUIET' },
+    proton: { currentPfu: null, energy: '>=10 MeV' },
+    scales: deriveNoaaScales({ fetchedAt, xrayFlux: null, protonPfu: null, kp: null }),
     notices: [{ issuedAt: fetchedAt, type: 'FALLBACK', text: 'SWPC upstream unavailable; showing stale-safe fallback.' }],
   };
 }

@@ -114,6 +114,27 @@ export const mockWeather: SpaceWeatherSnapshot = {
     ],
     storm: 'UNSETTLED',
   },
+  proton: {
+    currentPfu: 0.24,
+    energy: '>=10 MeV',
+    observedAt: fetchedAt,
+  },
+  scales: {
+    observedAt: fetchedAt,
+    current: {
+      r: { scale: 0, label: 'R0', text: 'none', observedAt: fetchedAt, source: 'NOAA_SWPC' },
+      s: { scale: 0, label: 'S0', text: 'none', observedAt: fetchedAt, source: 'NOAA_SWPC' },
+      g: { scale: 0, label: 'G0', text: 'none', observedAt: fetchedAt, source: 'NOAA_SWPC' },
+    },
+    forecast: [
+      {
+        t: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+        r: { scale: null, label: 'R—', minorProbabilityPct: 30, majorProbabilityPct: 5, source: 'NOAA_SWPC' },
+        s: { scale: null, label: 'S—', probabilityPct: 5, source: 'NOAA_SWPC' },
+        g: { scale: 1, label: 'G1', text: 'minor', source: 'NOAA_SWPC' },
+      },
+    ],
+  },
   notices: [
     {
       issuedAt: new Date(Date.now() - 20 * 60 * 1000).toISOString(),

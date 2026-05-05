@@ -16,7 +16,7 @@ import { buildLiveContactLinks } from '@/lib/contactLinks';
 import type { ContactPrecisionCandidate, ContactPrecisionResult, ContactPrecisionWorkerResult } from '@/lib/contactPrecision';
 import { classifyConjunctionSeverity, conjunctionSeverityRank } from '@/lib/conjunctionRisk';
 import { elevationMaskSourceLabel, withUserElevationMaskSource } from '@/lib/groundStationElevation';
-import type { CatalogEntry, ConjunctionRecord, FleetMemberRef, GroundStation, LiveContactLink, MapFocusTarget } from '@/domain/types';
+import type { CatalogEntry, ConjunctionRecord, FleetMemberRef, GroundStation, LiveContactLink, MapFocusTarget, NoaaScaleSummary } from '@/domain/types';
 
 const OrbitGlobe3D = defineAsyncComponent(() => import('@/components/OrbitGlobe3D.vue'));
 const store = useAppStore();
@@ -537,14 +537,16 @@ const todayWatch = computed<ActionSignal[]>(() => {
 
   const kp = store.weather?.kp.current ?? null;
   const flareClass = store.weather?.xray.flareClass;
-  if ((kp !== null && kp >= 4) || flareClass === 'M' || flareClass === 'X') {
+  const currentScales = store.weather?.scales?.current;
+  const maxScale = maxNoaaScale(currentScales?.r, currentScales?.s, currentScales?.g);
+  if ((kp !== null && kp >= 4) || maxScale >= 1 || flareClass === 'M' || flareClass === 'X') {
     items.push({
       id: 'watch-space-weather',
       kicker: 'Environment',
       title: `Space weather ${store.weather?.kp.storm ?? 'signal'}`,
-      detail: `Kp ${kp ?? '—'} · X-ray ${flareClass ?? '—'}${store.weather?.xray.classMagnitude ?? ''}`,
+      detail: weatherScaleSummary(),
       time: store.weather?.fetchedAt ? formatTimestamp(store.weather.fetchedAt) : 'Awaiting',
-      tone: kp !== null && kp >= 5 ? 'critical' : 'warn',
+      tone: kp !== null && kp >= 7 ? 'critical' : maxScale >= 3 ? 'critical' : 'warn',
       sourceDetail: 'NOAA SWPC',
       trustTier: store.offline ? 'Stale public source' : 'Public source',
       actionLabel: 'Evidence',
@@ -884,22 +886,67 @@ function buildConjunctionEvidence(item: ConjunctionRecord): EvidenceDrawer {
   };
 }
 
+function maxNoaaScale(...scales: Array<NoaaScaleSummary | undefined>) {
+  return scales.reduce((max, item) => Math.max(max, item?.scale ?? 0), 0);
+}
+
+function noaaScaleLabel(kind: 'R' | 'S' | 'G', scale?: NoaaScaleSummary) {
+  return scale?.label ?? `${kind}—`;
+}
+
+function noaaScaleText(scale?: NoaaScaleSummary) {
+  return scale?.text ?? '—';
+}
+
+function weatherScaleSummary() {
+  const current = store.weather?.scales?.current;
+  const xray = store.weather?.xray;
+  const xrayLabel = xray?.flareClass ? `${xray.flareClass}${xray.classMagnitude ?? ''}` : '—';
+  return `Kp ${store.weather?.kp.current ?? '—'} · ${noaaScaleLabel('G', current?.g)} · ${noaaScaleLabel('S', current?.s)} · ${noaaScaleLabel('R', current?.r)} · X-ray ${xrayLabel}`;
+}
+
+function protonFluxEvidenceLabel() {
+  const proton = store.weather?.proton;
+  if (proton?.currentPfu === null || proton?.currentPfu === undefined) return '—';
+  return `${proton.currentPfu.toFixed(proton.currentPfu >= 10 ? 1 : 2)} pfu ${proton.energy}`;
+}
+
+function weatherEvidenceTone(): Tone {
+  const current = store.weather?.scales?.current;
+  if (maxNoaaScale(current?.r, current?.s, current?.g) >= 3 || (store.weather?.kp.current ?? 0) >= 7) return 'critical';
+  if (maxNoaaScale(current?.r, current?.s, current?.g) >= 1 || (store.weather?.kp.current ?? 0) >= 4) return 'warn';
+  return 'info';
+}
+
+function noaaMetricTone(scale?: NoaaScaleSummary): 'default' | 'good' | 'warn' | 'critical' {
+  const value = scale?.scale ?? 0;
+  if (value >= 3) return 'critical';
+  if (value >= 1) return 'warn';
+  return 'good';
+}
+
 function buildWeatherEvidence(): EvidenceDrawer {
+  const current = store.weather?.scales?.current;
   return {
     title: 'Space Weather',
     subtitle: 'NOAA SWPC public environment signal',
     sourceDetail: 'NOAA SWPC',
     trustTier: store.offline ? 'Stale public source' : 'Public source',
-    tone: (store.weather?.kp.current ?? 0) >= 4 ? 'warn' : 'info',
+    tone: weatherEvidenceTone(),
     rows: [
       { label: 'Kp', value: `${store.weather?.kp.current ?? '—'}` },
       { label: 'Storm tier', value: store.weather?.kp.storm ?? '—' },
+      { label: 'G scale', value: `${noaaScaleLabel('G', current?.g)} · ${noaaScaleText(current?.g)}` },
+      { label: 'S scale', value: `${noaaScaleLabel('S', current?.s)} · ${noaaScaleText(current?.s)}` },
+      { label: 'R scale', value: `${noaaScaleLabel('R', current?.r)} · ${noaaScaleText(current?.r)}` },
+      { label: 'Proton flux', value: protonFluxEvidenceLabel() },
       { label: 'X-ray class', value: `${store.weather?.xray.flareClass ?? '—'}${store.weather?.xray.classMagnitude ?? ''}` },
       { label: 'Current flux', value: store.weather?.xray.currentWm2 ? `${store.weather.xray.currentWm2.toExponential(2)} W/m²` : '—' },
       { label: 'Fetched at', value: formatTimestamp(store.weather?.fetchedAt) },
     ],
     links: [
       { label: 'NOAA SWPC JSON', href: 'https://services.swpc.noaa.gov/json/' },
+      { label: 'NOAA scales', href: 'https://services.swpc.noaa.gov/products/noaa-scales.json' },
       { label: 'SWPC alerts', href: 'https://services.swpc.noaa.gov/products/alerts.json' },
     ],
     note: 'Space weather values are public environmental signals. They do not confirm a specific spacecraft anomaly.',
@@ -2361,6 +2408,9 @@ watch(
       <div class="metric-grid">
         <MetricCard label="X-ray" :value="`${store.weather?.xray.flareClass ?? '—'}${store.weather?.xray.classMagnitude ?? ''}`" hint="GOES 1-day" />
         <MetricCard label="Kp" :value="`${store.weather?.kp.current ?? '—'}`" hint="3일 예보 반영" tone="warn" />
+        <MetricCard label="G" :value="noaaScaleLabel('G', store.weather?.scales?.current.g)" :hint="`지자기폭풍 · ${noaaScaleText(store.weather?.scales?.current.g)}`" :tone="noaaMetricTone(store.weather?.scales?.current.g)" />
+        <MetricCard label="S" :value="noaaScaleLabel('S', store.weather?.scales?.current.s)" :hint="`태양복사폭풍 · ${noaaScaleText(store.weather?.scales?.current.s)}`" :tone="noaaMetricTone(store.weather?.scales?.current.s)" />
+        <MetricCard label="R" :value="noaaScaleLabel('R', store.weather?.scales?.current.r)" :hint="`전리층교란 · ${noaaScaleText(store.weather?.scales?.current.r)}`" :tone="noaaMetricTone(store.weather?.scales?.current.r)" />
       </div>
       <p class="supporting-text">{{ truncate(store.weather?.notices?.[0]?.text ?? '현재 특기사항이 없습니다.', 96) }}</p>
     </PanelCard>
