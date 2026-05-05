@@ -158,15 +158,15 @@ function clampPlaybackSpeed(value: unknown) {
           <span v-else class="simulation-controls__pause-icon" aria-hidden="true"></span>
         </button>
         <button
-          class="simulation-controls__transport"
-          :class="{ 'simulation-controls__transport--active': isRewinding }"
+          class="simulation-controls__direction"
+          :class="{ 'simulation-controls__direction--reverse': isRewinding }"
           type="button"
           :aria-pressed="isRewinding"
           aria-label="재생 방향"
-          :title="isRewinding ? '되감기' : '정방향'"
+          :title="isRewinding ? '역방향 재생' : '정방향 재생'"
           @click.prevent="togglePlaybackDirection"
         >
-          <span class="simulation-controls__direction-icon" aria-hidden="true"></span>
+          <span class="simulation-controls__direction-icon" aria-hidden="true">{{ isRewinding ? '↺' : '↻' }}</span>
         </button>
         <input
           class="simulation-controls__speed-slider"

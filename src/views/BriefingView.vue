@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue';
-import { RouterLink } from 'vue-router';
+import { RouterLink, useRouter } from 'vue-router';
 import PanelCard from '@/components/PanelCard.vue';
 import MetricCard from '@/components/MetricCard.vue';
 import OriginBadge from '@/components/OriginBadge.vue';
@@ -21,6 +21,7 @@ import type { CatalogEntry, ConjunctionRecord, FleetMemberRef, GroundStation, Li
 const OrbitGlobe3D = defineAsyncComponent(() => import('@/components/OrbitGlobe3D.vue'));
 const store = useAppStore();
 const viewport = useViewport();
+const router = useRouter();
 const livePlaybackRate = ref(1);
 const resumePlaybackRate = ref(1);
 const liveWallClockAnchor = ref(Date.now());
@@ -28,8 +29,12 @@ const liveOrbitAnchor = ref(Date.now());
 const orbitClockTick = ref(Date.now());
 const mapControlsOpen = ref(false);
 const mapFocusMode = ref(false);
+const mapPanelRef = ref<HTMLElement | null>(null);
 const focusedTarget = ref<MapFocusTarget | null>(null);
 const hoveredTarget = ref<MapFocusTarget | null>(null);
+const focusBackStack = ref<MapFocusTarget[]>([]);
+const focusForwardStack = ref<MapFocusTarget[]>([]);
+const isPriorityWatchExpanded = ref(false);
 const trackingScopeTab = ref<'groundStations' | 'trackedObjects'>('groundStations');
 const cdmScope = ref<'tracked' | 'focused' | 'all'>('tracked');
 const cdmScopeRecords = ref<ConjunctionRecord[] | null>(null);
@@ -39,10 +44,12 @@ const contactPrecisionResults = ref<Record<string, ContactPrecisionResult>>({});
 const contactPrecisionPendingKeys = ref<Set<string>>(new Set());
 const addingConjunctionCatalogNumbers = ref<Set<number>>(new Set());
 const cdmFeedbackToasts = ref<CdmFeedbackToast[]>([]);
+const evidenceDrawer = ref<EvidenceDrawer | null>(null);
 const cdmFeedbackDismissTimers = new Map<string, number>();
 let orbitClockTimer: number | null = null;
 let contactPrecisionWorker: Worker | null = null;
 let contactPrecisionRequestId = 0;
+const focusHistoryLimit = 8;
 usePassPredictions(focusedTarget);
 
 interface CdmFeedbackToast {
@@ -53,6 +60,72 @@ interface CdmFeedbackToast {
   message: string;
   detail?: string;
   retryable?: boolean;
+}
+
+type Tone = 'good' | 'warn' | 'critical' | 'info';
+type FreshnessState = 'fresh' | 'aging' | 'stale' | 'missing';
+
+interface FreshnessMeta {
+  state: FreshnessState;
+  label: string;
+  detail: string;
+  tone: Tone;
+  epochIso?: string;
+}
+
+interface TrackedObjectSummary {
+  key: string;
+  ref: FleetMemberRef;
+  name: string;
+  detail: string;
+  source: string;
+  sourceDetail: string;
+  trustTier: string;
+  trustTone: Tone;
+  freshness: FreshnessMeta;
+  hidden: boolean;
+  entry?: CatalogEntry;
+  satnogsUrl?: string;
+  nextContactLabel: string;
+  nextContactTone: Tone;
+  riskLabel: string;
+  latestStatusLabel: string;
+  anomalyCount: number;
+}
+
+interface EvidenceRow {
+  label: string;
+  value: string;
+}
+
+interface EvidenceLink {
+  label: string;
+  href: string;
+}
+
+interface EvidenceDrawer {
+  title: string;
+  subtitle: string;
+  sourceDetail: string;
+  trustTier: string;
+  tone: Tone;
+  rows: EvidenceRow[];
+  rawLines?: string[];
+  links?: EvidenceLink[];
+  note?: string;
+}
+
+interface ActionSignal {
+  id: string;
+  kicker: string;
+  title: string;
+  detail: string;
+  time: string;
+  tone: Tone;
+  sourceDetail: string;
+  trustTier: string;
+  actionLabel: string;
+  action: () => void;
 }
 
 onMounted(() => {
@@ -106,28 +179,51 @@ const contactLinks = computed(() =>
   }),
 );
 
-const trackedObjects = computed(() =>
+const trackedObjects = computed<TrackedObjectSummary[]>(() =>
   (store.selectedFleet?.memberRefs ?? []).map((member) => {
     const key = refKey(member);
     if (member.refType === 'catalog') {
       const entry = store.catalog.find((item) => item.satcat.catalogNumber === member.catalogNumber);
+      const freshness = catalogFreshness(entry);
+      const hidden = store.isFleetMemberHidden(member);
       return {
         key,
         ref: member,
         name: member.displayName ?? entry?.satcat.objectName ?? `NORAD ${member.catalogNumber}`,
         detail: entry ? `NORAD ${entry.satcat.catalogNumber} · ${entry.group} · ${entry.satcat.ownerCountry}` : `NORAD ${member.catalogNumber} · catalog resolving`,
+        sourceDetail: entry?.tle ? 'CelesTrak GP TLE' : 'CelesTrak SATCAT only',
+        trustTier: trustTierForCatalog(freshness),
+        trustTone: trustToneForFreshness(freshness),
+        freshness,
         source: 'SATCAT',
-        hidden: store.isFleetMemberHidden(member),
+        hidden,
+        entry,
+        satnogsUrl: member.catalogNumber ? satnogsSatelliteUrl(member.catalogNumber) : undefined,
+        nextContactLabel: contactSummaryForObject(key),
+        nextContactTone: contactToneForObject(key),
+        riskLabel: riskLabelForObject(key),
+        latestStatusLabel: latestStatusLabelForRef(member),
+        anomalyCount: openAnomalyCountForRef(member),
       };
     }
     const custom = store.customTles.find((item) => item.id === member.customTleId);
+    const freshness = customTleFreshness(custom?.parsed?.epoch ?? custom?.addedAt);
     return {
       key,
       ref: member,
       name: member.displayName ?? custom?.name ?? 'Custom object',
       detail: `${custom?.format ?? 'CUSTOM'} · ${custom?.sourceLabel ?? 'user supplied elements'}`,
+      sourceDetail: 'User-supplied TLE',
+      trustTier: 'User supplied',
+      trustTone: 'info',
+      freshness,
       source: 'USER TLE',
       hidden: store.isFleetMemberHidden(member),
+      nextContactLabel: contactSummaryForObject(key),
+      nextContactTone: contactToneForObject(key),
+      riskLabel: riskLabelForObject(key),
+      latestStatusLabel: latestStatusLabelForRef(member),
+      anomalyCount: openAnomalyCountForRef(member),
     };
   }),
 );
@@ -159,6 +255,11 @@ const focusedSatellite = computed(() => {
   return entry && member ? { entry, member } : null;
 });
 
+const focusedObjectSummary = computed(() => {
+  if (focusedTarget.value?.type !== 'satellite') return null;
+  return trackedObjects.value.find((item) => item.key === focusedTarget.value?.id) ?? null;
+});
+
 const focusedCatalogNumber = computed(() => {
   if (focusedTarget.value?.type !== 'satellite') return null;
   return catalogNumberFromSatelliteId(focusedTarget.value.id);
@@ -168,6 +269,19 @@ const focusedStation = computed(() => {
   if (focusedTarget.value?.type !== 'groundStation') return null;
   return store.groundStations.find((station) => station.id === focusedTarget.value?.id) ?? null;
 });
+const previousFocusTarget = computed(() => lastFocusTarget(focusBackStack.value));
+const nextFocusTarget = computed(() => lastFocusTarget(focusForwardStack.value));
+const focusHistoryItems = computed(() =>
+  focusBackStack.value
+    .slice()
+    .reverse()
+    .slice(0, 3)
+    .map((target) => ({
+      key: focusTargetKey(target),
+      target,
+      label: focusTargetLabel(target),
+    })),
+);
 
 const enabledGroundStationCount = computed(() => store.groundStations.filter((station) => station.enabled).length);
 const visibleTrackedObjectCount = computed(() => trackedObjects.value.filter((item) => !item.hidden).length);
@@ -186,6 +300,7 @@ const cdmScopeConjunctions = computed(() => {
 const riskSatelliteTones = computed<Record<string, 'warn' | 'critical'>>(() => {
   const tones: Record<string, 'warn' | 'critical'> = {};
   for (const item of cdmScopeConjunctions.value) {
+    if (cdmHasPassed(item)) continue;
     const severity = cdmSeverity(item);
     if (severity === 'info') continue;
     addCatalogRiskTone(tones, item.primary.catalogNumber, severity);
@@ -214,13 +329,48 @@ const focusedLinks = computed(() => {
 
 const focusedConjunctions = computed(() => {
   const target = focusedTarget.value;
-  if (target?.type !== 'satellite') return cdmScopeConjunctions.value.slice(0, 3);
+  if (target?.type !== 'satellite') return sortedConjunctionsForDisplay(cdmScopeConjunctions.value).slice(0, 3);
   const catalogNumber = focusedCatalogNumber.value;
   if (!catalogNumber) return [];
-  return filterConjunctionsByCatalog(cdmScopeConjunctions.value, [catalogNumber])
-    .sort((left, right) => conjunctionSeverityRank(cdmSeverity(left)) - conjunctionSeverityRank(cdmSeverity(right)) || left.tca.localeCompare(right.tca))
-    .slice(0, 4);
+  return sortedConjunctionsForDisplay(filterConjunctionsByCatalog(cdmScopeConjunctions.value, [catalogNumber])).slice(0, 4);
 });
+
+const staleTrackedObjects = computed(() =>
+  trackedObjects.value.filter((item) => item.freshness.state === 'stale' || item.freshness.state === 'missing'),
+);
+
+const trustOverview = computed(() => [
+  {
+    label: 'Catalog GP',
+    sourceDetail: 'CelesTrak GP / SATCAT',
+    trustTier: staleTrackedObjects.value.length ? 'Stale public source' : 'Public source',
+    tone: staleTrackedObjects.value.length ? 'warn' : 'good',
+    detail: staleTrackedObjects.value.length
+      ? `${staleTrackedObjects.value.length} tracked objects need attention`
+      : `${trackedObjects.value.length} tracked objects resolved`,
+  },
+  {
+    label: 'Screening',
+    sourceDetail: 'CelesTrak SOCRATES',
+    trustTier: 'Public screening',
+    tone: cdmScopeConjunctions.value.length ? 'warn' : 'info',
+    detail: `${cdmScopeConjunctions.value.length} public screening signals`,
+  },
+  {
+    label: 'Space Weather',
+    sourceDetail: 'NOAA SWPC',
+    trustTier: store.offline ? 'Stale public source' : 'Public source',
+    tone: (store.weather?.kp.current ?? 0) >= 4 ? 'warn' : 'good',
+    detail: store.weather?.fetchedAt ? `Updated ${formatTimestamp(store.weather.fetchedAt)}` : 'Awaiting SWPC summary',
+  },
+  {
+    label: 'User Layer',
+    sourceDetail: 'Local workspace',
+    trustTier: 'User supplied',
+    tone: store.anomalies.length ? 'warn' : 'info',
+    detail: `${store.fleetHealth.recordedMembers}/${store.fleetHealth.totalMembers} readiness records`,
+  },
+]);
 
 const renderMode = computed(() => {
   if (store.preferences.dataSaver) return '2d';
@@ -293,12 +443,132 @@ const activeLayers = computed(() => [
   { label: 'Satellite States', detail: `${riskSatelliteIds.value.length} risk · ${contactLinks.value.filter((link) => link.status === 'IN_CONTACT').length} contact`, active: visibleFleetEntries.value.length > 0 },
   { label: 'Ground Stations', detail: `${store.groundStations.filter((station) => station.enabled).length} online`, active: true },
   { label: 'Contact Links', detail: `${contactLinks.value.filter((link) => link.status === 'IN_CONTACT').length} active`, active: contactLinks.value.some((link) => link.status === 'IN_CONTACT') },
-  { label: 'Conjunction Risk', detail: `${cdmScopeConjunctions.value.length} ${cdmScope.value} windows`, active: cdmScopeConjunctions.value.length > 0 },
+  { label: 'Public Screening', detail: `${cdmScopeConjunctions.value.length} ${cdmScope.value} signals`, active: cdmScopeConjunctions.value.length > 0 },
   { label: 'Space Weather', detail: store.weather?.kp.storm ?? (store.loading ? '불러오는 중' : '데이터 없음'), active: Boolean(store.weather) },
   { label: 'Decay Watch', detail: `${store.filteredDecayPredictions.length} entries`, active: store.filteredDecayPredictions.length > 0 },
 ]);
 
-const intelQueue = computed(() =>
+const todayWatch = computed<ActionSignal[]>(() => {
+  const items: ActionSignal[] = [];
+  const activeLinks = contactLinks.value.filter((link) => link.status === 'IN_CONTACT').slice(0, 2);
+  for (const link of activeLinks) {
+    items.push({
+      id: `watch-contact-${link.satelliteId}-${link.groundStationId}`,
+      kicker: 'Now',
+      title: `${link.satelliteName} contact active`,
+      detail: `${link.groundStationName} · el ${link.elevationDeg.toFixed(1)}° · ${linkStatusLabel(link)}`,
+      time: 'Live',
+      tone: 'good',
+      sourceDetail: 'Derived from TLE',
+      trustTier: 'Derived estimate',
+      actionLabel: 'Focus on map',
+      action: () => focusTargetOnMap(satelliteFocusTarget(link.satelliteId)),
+    });
+  }
+
+  const nextLinks = contactLinks.value
+    .filter((link) => link.status === 'BEFORE_AOS')
+    .sort((left, right) => (left.countdownSeconds ?? Number.POSITIVE_INFINITY) - (right.countdownSeconds ?? Number.POSITIVE_INFINITY))
+    .slice(0, Math.max(0, 3 - items.length));
+  for (const link of nextLinks) {
+    items.push({
+      id: `watch-aos-${link.satelliteId}-${link.groundStationId}`,
+      kicker: 'Next',
+      title: `${link.satelliteName} next AOS`,
+      detail: `${link.groundStationName} · ${linkStatusLabel(link)}`,
+      time: countdownSecondsForLink(link) !== undefined ? formatCountdown(countdownSecondsForLink(link)) : 'Pending',
+      tone: 'info',
+      sourceDetail: 'Derived from TLE',
+      trustTier: 'Derived estimate',
+      actionLabel: 'Show contacts',
+      action: () => focusTargetOnMap(satelliteFocusTarget(link.satelliteId)),
+    });
+  }
+
+  for (const item of staleTrackedObjects.value.slice(0, 2)) {
+    items.push({
+      id: `watch-freshness-${item.key}`,
+      kicker: item.freshness.state === 'missing' ? 'Missing data' : 'Freshness',
+      title: item.name,
+      detail: item.freshness.detail,
+      time: item.freshness.label,
+      tone: item.freshness.tone,
+      sourceDetail: item.sourceDetail,
+      trustTier: item.trustTier,
+      actionLabel: 'Evidence',
+      action: () => openEvidence(buildCatalogEvidence(item)),
+    });
+  }
+
+  for (const item of upcomingConjunctionSignals(2)) {
+    const severity = cdmSeverity(item);
+    items.push({
+      id: `watch-screening-${item.id}`,
+      kicker: 'Screening',
+      title: `${item.primary.name} x ${item.secondary.name}`,
+      detail: `${item.missDistanceKm.toFixed(1)} km miss · public SOCRATES signal`,
+      time: formatOrbitRelative(item.tca),
+      tone: severity,
+      sourceDetail: 'CelesTrak SOCRATES screening',
+      trustTier: 'Public screening',
+      actionLabel: 'Review signal',
+      action: () => openEvidence(buildConjunctionEvidence(item)),
+    });
+  }
+
+  const kp = store.weather?.kp.current ?? null;
+  const flareClass = store.weather?.xray.flareClass;
+  if ((kp !== null && kp >= 4) || flareClass === 'M' || flareClass === 'X') {
+    items.push({
+      id: 'watch-space-weather',
+      kicker: 'Environment',
+      title: `Space weather ${store.weather?.kp.storm ?? 'signal'}`,
+      detail: `Kp ${kp ?? '—'} · X-ray ${flareClass ?? '—'}${store.weather?.xray.classMagnitude ?? ''}`,
+      time: store.weather?.fetchedAt ? formatTimestamp(store.weather.fetchedAt) : 'Awaiting',
+      tone: kp !== null && kp >= 5 ? 'critical' : 'warn',
+      sourceDetail: 'NOAA SWPC',
+      trustTier: store.offline ? 'Stale public source' : 'Public source',
+      actionLabel: 'Evidence',
+      action: () => openEvidence(buildWeatherEvidence()),
+    });
+  }
+
+  const openAnomaly = store.anomalies.find((item) => !item.closedAt && item.severity !== 'INFO');
+  if (openAnomaly) {
+    items.push({
+      id: `watch-anomaly-${openAnomaly.id}`,
+      kicker: 'User issue',
+      title: `${openAnomaly.severity} · ${openAnomaly.subsystem || 'GENERAL'}`,
+      detail: truncate(openAnomaly.description, 96),
+      time: formatRelative(openAnomaly.openedAt),
+      tone: openAnomaly.severity === 'CRITICAL' ? 'critical' : 'warn',
+      sourceDetail: 'User-entered',
+      trustTier: 'User supplied',
+      actionLabel: 'Add note',
+      action: goToFleetNotes,
+    });
+  }
+
+  const upcomingEvent = store.upcomingEvents[0];
+  if (upcomingEvent) {
+    items.push({
+      id: `watch-event-${upcomingEvent.id}`,
+      kicker: 'Schedule',
+      title: upcomingEvent.title,
+      detail: upcomingEvent.notes ? truncate(upcomingEvent.notes, 96) : `Scheduled ${upcomingEvent.kind.toLowerCase()} event`,
+      time: formatRelative(upcomingEvent.startAt),
+      tone: 'info',
+      sourceDetail: 'User-entered',
+      trustTier: 'User supplied',
+      actionLabel: 'Open schedule',
+      action: goToStations,
+    });
+  }
+
+  return items.slice(0, 8);
+});
+
+const intelQueue = computed<ActionSignal[]>(() =>
   [
     ...store.alerts.map((alert) => ({
       id: `alert-${alert.id}`,
@@ -306,15 +576,23 @@ const intelQueue = computed(() =>
       title: alert.title,
       detail: alert.detail,
       time: 'Live',
-      tone: alert.tone,
+      tone: alert.tone as Tone,
+      sourceDetail: alert.kind === 'weather' ? 'NOAA SWPC' : 'Local workspace',
+      trustTier: alert.kind === 'weather' ? 'Public source' : 'Public signal',
+      actionLabel: alert.kind === 'weather' ? 'Evidence' : 'Review',
+      action: alert.kind === 'weather' ? () => openEvidence(buildWeatherEvidence()) : goToFleetNotes,
     })),
-    ...cdmScopeConjunctions.value.slice(0, 2).map((item) => ({
+    ...upcomingConjunctionSignals(2).map((item) => ({
       id: `conjunction-${item.id}`,
-      kicker: 'Conjunction',
+      kicker: 'Screening',
       title: `${item.primary.name} × ${item.secondary.name}`,
-      detail: `${item.missDistanceKm.toFixed(1)} km miss · ${item.relVelocityKmS.toFixed(1)} km/s`,
+      detail: `${item.missDistanceKm.toFixed(1)} km miss · public SOCRATES signal`,
       time: formatOrbitRelative(item.tca),
       tone: cdmSeverity(item),
+      sourceDetail: 'CelesTrak SOCRATES screening',
+      trustTier: 'Public screening',
+      actionLabel: 'Evidence',
+      action: () => openEvidence(buildConjunctionEvidence(item)),
     })),
     ...store.filteredDecayPredictions.slice(0, 1).map((item) => ({
       id: `decay-${item.catalogNumber}`,
@@ -323,6 +601,10 @@ const intelQueue = computed(() =>
       detail: `${item.confidence} confidence · ${item.intersectsSelectedFleet ? 'selected fleet' : 'catalog only'}`,
       time: formatRelative(item.predictedDecayAt),
       tone: item.intersectsSelectedFleet ? 'warn' : 'info',
+      sourceDetail: 'CelesTrak decay feed',
+      trustTier: store.offline ? 'Stale public source' : 'Public source',
+      actionLabel: 'Evidence',
+      action: () => openEvidence(buildDecayEvidence(item)),
     })),
     ...store.upcomingEvents.slice(0, 2).map((event) => ({
       id: `event-${event.id}`,
@@ -331,6 +613,10 @@ const intelQueue = computed(() =>
       detail: event.notes ? truncate(event.notes, 86) : 'Scheduled user operation',
       time: formatRelative(event.startAt),
       tone: 'info',
+      sourceDetail: 'User-entered',
+      trustTier: 'User supplied',
+      actionLabel: 'Open schedule',
+      action: goToStations,
     })),
   ].slice(0, 7),
 );
@@ -340,6 +626,294 @@ function formatKicker(value: string) {
     .toLowerCase()
     .replace(/[-_]/g, ' ')
     .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function goToFleetNotes() {
+  void router.push('/fleets');
+}
+
+function goToStations() {
+  void router.push('/stations');
+}
+
+function openEvidence(drawer: EvidenceDrawer) {
+  evidenceDrawer.value = drawer;
+}
+
+function closeEvidence() {
+  evidenceDrawer.value = null;
+}
+
+function catalogFreshness(entry: CatalogEntry | undefined): FreshnessMeta {
+  if (!entry?.tle) {
+    return {
+      state: 'missing',
+      label: 'Missing TLE',
+      detail: 'No TLE is available for map, pass, or contact derivation.',
+      tone: 'critical',
+    };
+  }
+  const epochIso = tleEpochIso(entry);
+  if (!epochIso) {
+    return {
+      state: 'missing',
+      label: 'Epoch unknown',
+      detail: 'The TLE epoch could not be parsed from the public source.',
+      tone: 'warn',
+    };
+  }
+  return freshnessFromEpoch(epochIso, 'TLE epoch');
+}
+
+function customTleFreshness(epochIso?: string): FreshnessMeta {
+  if (!epochIso) {
+    return {
+      state: 'aging',
+      label: 'User TLE',
+      detail: 'User-supplied element set; epoch is not available in the current workspace summary.',
+      tone: 'info',
+    };
+  }
+  return freshnessFromEpoch(epochIso, 'User TLE epoch');
+}
+
+function freshnessFromEpoch(epochIso: string, label: string): FreshnessMeta {
+  const epochMs = new Date(epochIso).getTime();
+  const ageDays = Number.isFinite(epochMs) ? Math.max(0, (Date.now() - epochMs) / 86_400_000) : Number.NaN;
+  if (!Number.isFinite(ageDays)) {
+    return {
+      state: 'missing',
+      label: 'Epoch unknown',
+      detail: `${label} could not be parsed.`,
+      tone: 'warn',
+      epochIso,
+    };
+  }
+  if (ageDays <= 3) {
+    return {
+      state: 'fresh',
+      label: 'Fresh',
+      detail: `${label} ${formatAge(ageDays)} old`,
+      tone: 'good',
+      epochIso,
+    };
+  }
+  if (ageDays <= 14) {
+    return {
+      state: 'aging',
+      label: 'Aging',
+      detail: `${label} ${formatAge(ageDays)} old`,
+      tone: 'warn',
+      epochIso,
+    };
+  }
+  return {
+    state: 'stale',
+    label: 'Stale',
+    detail: `${label} ${formatAge(ageDays)} old`,
+    tone: 'critical',
+    epochIso,
+  };
+}
+
+function formatAge(ageDays: number) {
+  if (ageDays < 1) return `${Math.max(1, Math.round(ageDays * 24))}h`;
+  if (ageDays < 365) return `${ageDays < 10 ? ageDays.toFixed(1) : Math.round(ageDays)}d`;
+  return `${(ageDays / 365).toFixed(1)}y`;
+}
+
+function tleEpochIso(entry: CatalogEntry | undefined) {
+  if (entry?.orbital?.epoch) return entry.orbital.epoch;
+  const line1 = entry?.tle?.line1;
+  if (!line1 || line1.length < 32) return null;
+  const rawEpoch = line1.slice(18, 32).trim();
+  const yearPart = Number(rawEpoch.slice(0, 2));
+  const dayPart = Number(rawEpoch.slice(2));
+  if (!Number.isFinite(yearPart) || !Number.isFinite(dayPart)) return null;
+  const year = yearPart < 57 ? 2000 + yearPart : 1900 + yearPart;
+  const timestamp = Date.UTC(year, 0, 1) + (dayPart - 1) * 86_400_000;
+  if (!Number.isFinite(timestamp)) return null;
+  return new Date(timestamp).toISOString();
+}
+
+function trustTierForCatalog(freshness: FreshnessMeta) {
+  if (freshness.state === 'missing') return 'Source incomplete';
+  if (freshness.state === 'stale' || store.offline) return 'Stale public source';
+  return 'Public source';
+}
+
+function trustToneForFreshness(freshness: FreshnessMeta): Tone {
+  if (freshness.state === 'fresh') return store.offline ? 'warn' : 'good';
+  if (freshness.state === 'aging') return 'warn';
+  return freshness.tone;
+}
+
+function contactSummaryForObject(id: string) {
+  const active = contactLinks.value.find((link) => link.satelliteId === id && link.status === 'IN_CONTACT');
+  if (active) return `Active contact · ${active.groundStationName}`;
+  const next = contactLinks.value
+    .filter((link) => link.satelliteId === id && link.status === 'BEFORE_AOS')
+    .sort((left, right) => (left.countdownSeconds ?? Number.POSITIVE_INFINITY) - (right.countdownSeconds ?? Number.POSITIVE_INFINITY))[0];
+  if (next) return `Next AOS · ${next.groundStationName} · ${formatCountdown(countdownSecondsForLink(next))}`;
+  return 'No contact window in current horizon';
+}
+
+function contactToneForObject(id: string): Tone {
+  if (contactLinks.value.some((link) => link.satelliteId === id && link.status === 'IN_CONTACT')) return 'good';
+  if (contactLinks.value.some((link) => link.satelliteId === id && link.status === 'BEFORE_AOS')) return 'info';
+  return 'warn';
+}
+
+function riskLabelForObject(id: string) {
+  const riskTone = riskSatelliteTones.value[id];
+  if (riskTone === 'critical') return 'High-priority screening';
+  if (riskTone === 'warn') return 'Screening signal';
+  return 'No current public risk signal';
+}
+
+function latestStatusLabelForRef(refItem: FleetMemberRef) {
+  const latest = store.opsStatuses[refKey(refItem)]?.[0];
+  if (!latest) return 'No user status';
+  return `${latest.mcStatus} · ${latest.rfStatus}`;
+}
+
+function openAnomalyCountForRef(refItem: FleetMemberRef) {
+  return store.anomalies.filter((item) => !item.closedAt && sameFleetRef(item.satelliteRef, refItem)).length;
+}
+
+function sameFleetRef(left: FleetMemberRef, right: FleetMemberRef) {
+  if (left.refType !== right.refType) return false;
+  return left.refType === 'catalog' ? left.catalogNumber === right.catalogNumber : left.customTleId === right.customTleId;
+}
+
+function sourceClass(tone: Tone | FreshnessState) {
+  return `source-chip--${tone}`;
+}
+
+function satnogsSatelliteUrl(catalogNumber: number) {
+  return `https://db.satnogs.org/satellite/${catalogNumber}/`;
+}
+
+function buildCatalogEvidence(item: TrackedObjectSummary): EvidenceDrawer {
+  const catalogNumber = item.ref.catalogNumber ?? item.entry?.satcat.catalogNumber;
+  return {
+    title: item.name,
+    subtitle: item.entry ? `NORAD ${item.entry.satcat.catalogNumber} · ${item.entry.group}` : item.detail,
+    sourceDetail: item.sourceDetail,
+    trustTier: item.trustTier,
+    tone: item.trustTone,
+    rows: [
+      { label: 'Freshness', value: `${item.freshness.label} · ${item.freshness.detail}` },
+      { label: 'Origin', value: item.entry?.origin ?? item.source },
+      { label: 'Fetched at', value: formatTimestamp(item.entry?.fetchedAt ?? item.entry?.satcat.fetchedAt) },
+      { label: 'TLE epoch', value: item.freshness.epochIso ? formatTimestamp(item.freshness.epochIso) : 'Not available' },
+      { label: 'SATCAT status', value: item.entry?.satcat.opsStatusCode ?? 'Not resolved' },
+      { label: 'Object type', value: item.entry?.satcat.objectType ?? 'Unknown' },
+      { label: 'Owner', value: item.entry?.satcat.ownerCountry ?? 'Unknown' },
+      { label: 'Contact context', value: item.nextContactLabel },
+      { label: 'User status', value: item.latestStatusLabel },
+      { label: 'Open anomalies', value: String(item.anomalyCount) },
+    ],
+    rawLines: item.entry?.tle ? [item.entry.tle.line0 ?? item.name, item.entry.tle.line1, item.entry.tle.line2] : undefined,
+    links: catalogNumber
+      ? [
+          { label: 'CelesTrak GP', href: `https://celestrak.org/NORAD/elements/gp.php?CATNR=${catalogNumber}&FORMAT=tle` },
+          { label: 'CelesTrak SATCAT', href: `https://celestrak.org/satcat/records.php?CATNR=${catalogNumber}&FORMAT=JSON` },
+          { label: 'SatNOGS public reference', href: satnogsSatelliteUrl(catalogNumber) },
+        ]
+      : undefined,
+    note: 'This is a public-source operating picture. Celtrak does not independently validate the orbit or operator status.',
+  };
+}
+
+function buildConjunctionEvidence(item: ConjunctionRecord): EvidenceDrawer {
+  return {
+    title: `${item.primary.name} x ${item.secondary.name}`,
+    subtitle: 'Public conjunction screening signal',
+    sourceDetail: 'CelesTrak SOCRATES screening',
+    trustTier: item.stale || store.offline ? 'Stale public source' : 'Public screening',
+    tone: cdmEvidenceTone(item),
+    rows: [
+      { label: 'Celtrak interpretation', value: cdmSeverityLabel(item) },
+      { label: 'Primary', value: objectRefLabel(item.primary) },
+      { label: 'Secondary', value: objectRefLabel(item.secondary) },
+      { label: 'TCA', value: formatTimestamp(item.tca) },
+      { label: 'Relative to orbit clock', value: formatOrbitRelative(item.tca) },
+      { label: 'Miss distance', value: `${item.missDistanceKm.toFixed(2)} km` },
+      { label: 'Relative velocity', value: `${item.relVelocityKmS.toFixed(2)} km/s` },
+      { label: 'Pc', value: item.pc !== undefined ? item.pc.toExponential(2) : 'Not published' },
+      { label: 'Fetched at', value: formatTimestamp(item.fetchedAt) },
+      { label: 'Source', value: item.source },
+    ],
+    links: [{ label: 'CelesTrak SOCRATES', href: 'https://celestrak.org/SOCRATES/' }],
+    note: 'SOCRATES is treated as a public screening signal. Operator-confirmed collision-avoidance data is not available, so this is not a maneuver recommendation.',
+  };
+}
+
+function buildWeatherEvidence(): EvidenceDrawer {
+  return {
+    title: 'Space Weather',
+    subtitle: 'NOAA SWPC public environment signal',
+    sourceDetail: 'NOAA SWPC',
+    trustTier: store.offline ? 'Stale public source' : 'Public source',
+    tone: (store.weather?.kp.current ?? 0) >= 4 ? 'warn' : 'info',
+    rows: [
+      { label: 'Kp', value: `${store.weather?.kp.current ?? '—'}` },
+      { label: 'Storm tier', value: store.weather?.kp.storm ?? '—' },
+      { label: 'X-ray class', value: `${store.weather?.xray.flareClass ?? '—'}${store.weather?.xray.classMagnitude ?? ''}` },
+      { label: 'Current flux', value: store.weather?.xray.currentWm2 ? `${store.weather.xray.currentWm2.toExponential(2)} W/m²` : '—' },
+      { label: 'Fetched at', value: formatTimestamp(store.weather?.fetchedAt) },
+    ],
+    links: [
+      { label: 'NOAA SWPC JSON', href: 'https://services.swpc.noaa.gov/json/' },
+      { label: 'SWPC alerts', href: 'https://services.swpc.noaa.gov/products/alerts.json' },
+    ],
+    note: 'Space weather values are public environmental signals. They do not confirm a specific spacecraft anomaly.',
+  };
+}
+
+function buildDecayEvidence(item: { catalogNumber: number; name: string; predictedDecayAt: string; confidence: string; fetchedAt: string; source: string; intersectsSelectedFleet?: boolean }): EvidenceDrawer {
+  return {
+    title: item.name,
+    subtitle: 'Public decay forecast',
+    sourceDetail: 'CelesTrak decay feed',
+    trustTier: store.offline ? 'Stale public source' : 'Public source',
+    tone: item.intersectsSelectedFleet ? 'warn' : 'info',
+    rows: [
+      { label: 'NORAD', value: String(item.catalogNumber) },
+      { label: 'Predicted decay', value: formatTimestamp(item.predictedDecayAt) },
+      { label: 'Confidence', value: item.confidence },
+      { label: 'Source', value: item.source },
+      { label: 'Fetched at', value: formatTimestamp(item.fetchedAt) },
+    ],
+    links: [{ label: 'CelesTrak decay', href: 'https://celestrak.org/NORAD/elements/decay/' }],
+    note: 'Decay forecasts are OSINT signals and should be read as public monitoring context.',
+  };
+}
+
+function buildPassEvidence(link: LiveContactLink): EvidenceDrawer {
+  return {
+    title: `${link.satelliteName} -> ${link.groundStationName}`,
+    subtitle: 'Derived contact window',
+    sourceDetail: 'Derived from TLE',
+    trustTier: 'Derived estimate',
+    tone: link.status === 'IN_CONTACT' ? 'good' : 'info',
+    rows: [
+      { label: 'Status', value: link.status },
+      { label: 'Elevation', value: `${link.elevationDeg.toFixed(2)}°` },
+      { label: 'Azimuth', value: `${link.azimuthDeg.toFixed(1)}°` },
+      { label: 'AOS', value: link.aos ? formatTimestamp(link.aos) : 'Not resolved' },
+      { label: 'TCA', value: link.tca ? formatTimestamp(link.tca) : 'Not resolved' },
+      { label: 'LOS', value: link.los ? formatTimestamp(link.los) : 'Not resolved' },
+      { label: 'Countdown', value: linkStatusLabel(link) },
+      { label: 'Basis', value: 'SGP4 look-angle calculation using public/user TLE and local station mask' },
+    ],
+    note: 'Contact windows are derived estimates. They are not ground-station telemetry or confirmed RF contact.',
+  };
+}
+
+function objectRefLabel(item: ConjunctionRecord['primary']) {
+  return item.catalogNumber ? `${item.name} · NORAD ${item.catalogNumber}` : item.name;
 }
 
 function setRenderMode(mode: '2d' | '3d') {
@@ -435,11 +1009,88 @@ function toggleMapFocusMode() {
 }
 
 function setFocusedTarget(target: MapFocusTarget) {
-  focusedTarget.value = target;
+  commitFocusedTarget(target);
+}
+
+function focusTargetOnMap(target: MapFocusTarget) {
+  commitFocusedTarget(target);
+  scrollMapPanelIntoView();
+}
+
+function commitFocusedTarget(target: MapFocusTarget) {
+  const nextTarget = cloneFocusTarget(target);
+  if (focusTargetMatches(focusedTarget.value, nextTarget)) return;
+  if (focusedTarget.value) {
+    pushFocusHistory(focusBackStack, focusedTarget.value);
+  }
+  focusBackStack.value = removeFocusTargetFromStack(focusBackStack.value, nextTarget);
+  focusForwardStack.value = [];
+  focusedTarget.value = nextTarget;
+}
+
+function restorePreviousFocusTarget() {
+  const previous = previousFocusTarget.value;
+  if (!previous) return;
+  focusBackStack.value = focusBackStack.value.slice(0, -1);
+  if (focusedTarget.value) {
+    pushFocusHistory(focusForwardStack, focusedTarget.value);
+  }
+  focusedTarget.value = cloneFocusTarget(previous);
+  scrollMapPanelIntoView();
+}
+
+function restoreNextFocusTarget() {
+  const next = nextFocusTarget.value;
+  if (!next) return;
+  focusForwardStack.value = focusForwardStack.value.slice(0, -1);
+  if (focusedTarget.value) {
+    pushFocusHistory(focusBackStack, focusedTarget.value);
+  }
+  focusedTarget.value = cloneFocusTarget(next);
+  scrollMapPanelIntoView();
+}
+
+function scrollMapPanelIntoView() {
+  window.requestAnimationFrame(() => {
+    mapPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 
 function clearFocusedTarget() {
+  if (focusedTarget.value) {
+    pushFocusHistory(focusBackStack, focusedTarget.value);
+  }
+  focusForwardStack.value = [];
   focusedTarget.value = null;
+}
+
+function pushFocusHistory(stack: typeof focusBackStack, target: MapFocusTarget) {
+  const cleanStack = stack.value.filter((item) => !focusTargetMatches(item, target));
+  cleanStack.push(cloneFocusTarget(target));
+  stack.value = cleanStack.slice(-focusHistoryLimit);
+}
+
+function removeFocusTargetFromStack(stack: MapFocusTarget[], target: MapFocusTarget) {
+  return stack.filter((item) => !focusTargetMatches(item, target));
+}
+
+function lastFocusTarget(stack: MapFocusTarget[]) {
+  return stack.length ? stack[stack.length - 1] : null;
+}
+
+function cloneFocusTarget(target: MapFocusTarget): MapFocusTarget {
+  return { type: target.type, id: target.id };
+}
+
+function focusTargetKey(target: MapFocusTarget) {
+  return `${target.type}:${target.id}`;
+}
+
+function focusTargetLabel(target: MapFocusTarget | null | undefined) {
+  if (!target) return '';
+  if (target.type === 'groundStation') return stationLookup.value[target.id] ?? target.id;
+  const catalogNumber = catalogNumberFromSatelliteId(target.id);
+  return satelliteLookup.value[target.id] ?? (catalogNumber ? `NORAD ${catalogNumber}` : target.id);
 }
 
 function satelliteFocusTarget(id: string): MapFocusTarget {
@@ -489,7 +1140,7 @@ async function activateConjunctionObject(item: ConjunctionRecord['primary']) {
   const target = conjunctionObjectTarget(item);
   if (!target || !item.catalogNumber) return;
   if (isConjunctionObjectTracked(item)) {
-    setFocusedTarget(target);
+    focusTargetOnMap(target);
     return;
   }
   if (isUnresolvedConjunctionObject(item)) {
@@ -532,7 +1183,7 @@ async function activateConjunctionObject(item: ConjunctionRecord['primary']) {
     addingConjunctionCatalogNumbers.value = next;
   }
   if (!addedEntry) return;
-  setFocusedTarget(target);
+  focusTargetOnMap(target);
   showCdmFeedback({
     catalogNumber: item.catalogNumber,
     name: item.name,
@@ -649,6 +1300,58 @@ function cdmSeverity(item: ConjunctionRecord) {
   return classifyConjunctionSeverity(item);
 }
 
+function cdmHasPassed(item: ConjunctionRecord) {
+  const tcaMs = new Date(item.tca).getTime();
+  const baseMs = displayedOrbitTime.value.getTime();
+  return Number.isFinite(tcaMs) && Number.isFinite(baseMs) && tcaMs < baseMs;
+}
+
+function cdmDisplayTone(item: ConjunctionRecord) {
+  return cdmHasPassed(item) ? 'passed' : cdmSeverity(item);
+}
+
+function cdmEvidenceTone(item: ConjunctionRecord): Tone {
+  return cdmHasPassed(item) ? 'info' : cdmSeverity(item);
+}
+
+function cdmSourceChipLabel(item: ConjunctionRecord) {
+  return cdmHasPassed(item) ? 'Past public signal' : 'Public screening';
+}
+
+function cdmSourceChipClass(item: ConjunctionRecord) {
+  return cdmHasPassed(item) ? 'source-chip--neutral' : 'source-chip--warn';
+}
+
+function sortedConjunctionsForDisplay(records: ConjunctionRecord[]) {
+  return [...records].sort((left, right) => {
+    const leftPassed = cdmHasPassed(left);
+    const rightPassed = cdmHasPassed(right);
+    if (leftPassed !== rightPassed) return leftPassed ? 1 : -1;
+    if (!leftPassed) {
+      return (
+        new Date(left.tca).getTime() - new Date(right.tca).getTime() ||
+        conjunctionSeverityRank(cdmSeverity(left)) - conjunctionSeverityRank(cdmSeverity(right))
+      );
+    }
+    return new Date(right.tca).getTime() - new Date(left.tca).getTime();
+  });
+}
+
+function upcomingConjunctionSignals(limit: number) {
+  const nowMs = displayedOrbitTime.value.getTime();
+  return cdmScopeConjunctions.value
+    .filter((item) => {
+      const tcaMs = new Date(item.tca).getTime();
+      return Number.isFinite(tcaMs) && tcaMs >= nowMs;
+    })
+    .sort((left, right) => {
+      const leftMs = new Date(left.tca).getTime();
+      const rightMs = new Date(right.tca).getTime();
+      return leftMs - rightMs || conjunctionSeverityRank(cdmSeverity(left)) - conjunctionSeverityRank(cdmSeverity(right));
+    })
+    .slice(0, limit);
+}
+
 function filterConjunctionsByCatalog(records: ConjunctionRecord[], catalogNumbers: number[]) {
   const catalogNumberSet = new Set(catalogNumbers);
   return records.filter(
@@ -670,10 +1373,11 @@ function addRiskTone(tones: Record<string, 'warn' | 'critical'>, id: string, ton
 }
 
 function cdmSeverityLabel(item: ConjunctionRecord) {
+  if (cdmHasPassed(item)) return 'Passed screening record';
   const severity = cdmSeverity(item);
-  if (severity === 'critical') return '심각한 위협';
-  if (severity === 'warn') return '근접 경고';
-  return '감시';
+  if (severity === 'critical') return 'High-priority screening';
+  if (severity === 'warn') return 'Screening signal';
+  return 'Monitor signal';
 }
 
 function catalogNumberFromSatelliteId(id: string) {
@@ -923,6 +1627,46 @@ watch(
           </button>
         </article>
       </div>
+      <div v-if="evidenceDrawer" class="evidence-backdrop" role="presentation" @click.self="closeEvidence">
+        <aside class="evidence-drawer" role="dialog" aria-modal="true" :aria-label="`${evidenceDrawer.title} evidence`">
+          <header class="evidence-drawer__header">
+            <div>
+              <p class="eyebrow">{{ evidenceDrawer.sourceDetail }}</p>
+              <h2>{{ evidenceDrawer.title }}</h2>
+              <p>{{ evidenceDrawer.subtitle }}</p>
+            </div>
+            <button class="evidence-drawer__close" type="button" aria-label="Evidence 닫기" @click="closeEvidence">
+              <span aria-hidden="true">×</span>
+            </button>
+          </header>
+          <div class="evidence-drawer__trust">
+            <span class="source-chip" :class="sourceClass(evidenceDrawer.tone)">{{ evidenceDrawer.trustTier }}</span>
+            <span class="source-chip source-chip--neutral">{{ evidenceDrawer.sourceDetail }}</span>
+          </div>
+          <dl class="evidence-drawer__rows">
+            <div v-for="row in evidenceDrawer.rows" :key="row.label">
+              <dt>{{ row.label }}</dt>
+              <dd>{{ row.value }}</dd>
+            </div>
+          </dl>
+          <div v-if="evidenceDrawer.rawLines?.length" class="evidence-drawer__raw" aria-label="Raw public source">
+            <code v-for="line in evidenceDrawer.rawLines" :key="line">{{ line }}</code>
+          </div>
+          <div v-if="evidenceDrawer.links?.length" class="evidence-drawer__links">
+            <a
+              v-for="link in evidenceDrawer.links"
+              :key="link.href"
+              class="button button--ghost panel-card__action-link"
+              :href="link.href"
+              target="_blank"
+              rel="noreferrer"
+            >
+              {{ link.label }}
+            </a>
+          </div>
+          <p v-if="evidenceDrawer.note" class="evidence-drawer__note">{{ evidenceDrawer.note }}</p>
+        </aside>
+      </div>
     </Teleport>
 
     <section class="war-room">
@@ -930,7 +1674,7 @@ watch(
         <div>
           <p class="eyebrow">War Room / Orbit Intelligence</p>
           <h2>Selected Fleet Live Operating Picture</h2>
-          <p>궤도, 지상국, 근접 접근, 우주 기상 신호를 하나의 작전 화면으로 통합합니다.</p>
+          <p>공개 우주상황 데이터를 selected fleet 기준으로 읽고 판단할 수 있는 OSINT briefing으로 정리합니다.</p>
         </div>
         <div class="war-room__status">
           <span :class="{ 'war-room__status-dot--warn': store.offline }" class="war-room__status-dot"></span>
@@ -946,8 +1690,57 @@ watch(
         </article>
       </div>
 
+      <section class="trust-strip" aria-label="Data trust overview">
+        <article v-for="item in trustOverview" :key="item.label" class="trust-strip__item" :class="`trust-strip__item--${item.tone}`">
+          <span>{{ item.label }}</span>
+          <strong>{{ item.trustTier }}</strong>
+          <p>{{ item.sourceDetail }} · {{ item.detail }}</p>
+        </article>
+      </section>
+
+      <section class="today-watch" aria-label="Priority Watch">
+        <div class="today-watch__header">
+          <div>
+            <p class="eyebrow">Priority Watch</p>
+            <strong>Now / Next / Monitor</strong>
+          </div>
+          <div class="today-watch__header-actions">
+            <span>{{ todayWatch.length }} prioritized signals</span>
+            <button
+              class="button button--ghost today-watch__toggle"
+              type="button"
+              :aria-expanded="isPriorityWatchExpanded"
+              @click="isPriorityWatchExpanded = !isPriorityWatchExpanded"
+            >
+              {{ isPriorityWatchExpanded ? 'Collapse' : 'Expand' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="isPriorityWatchExpanded && todayWatch.length" class="today-watch__grid">
+          <article v-for="item in todayWatch" :key="item.id" class="today-watch__item" :class="`today-watch__item--${item.tone}`">
+            <div>
+              <span>{{ item.kicker }}</span>
+              <strong>{{ item.title }}</strong>
+              <p>{{ item.detail }}</p>
+              <div class="source-row">
+                <span class="source-chip" :class="sourceClass(item.tone)">{{ item.trustTier }}</span>
+                <span class="source-chip source-chip--neutral">{{ item.sourceDetail }}</span>
+              </div>
+            </div>
+            <div class="today-watch__actions">
+              <small>{{ item.time }}</small>
+              <button class="button button--ghost panel-card__action-link action-button" type="button" @click="item.action()">{{ item.actionLabel }}</button>
+            </div>
+          </article>
+        </div>
+        <div v-else-if="isPriorityWatchExpanded" class="today-watch__empty">
+          <strong>No priority signals</strong>
+          <p>선택 플릿의 공개 신호가 안정적입니다. Catalog에서 관심 객체를 추가하면 briefing이 더 구체화됩니다.</p>
+        </div>
+      </section>
+
       <div class="war-room__main">
-        <div class="war-room__map-panel" :class="mapPanelClasses">
+        <div ref="mapPanelRef" class="war-room__map-panel" :class="mapPanelClasses">
           <div class="map-mobile-bar" aria-label="Mobile map controls">
             <div class="map-mobile-bar__summary">
               <strong>{{ renderMode === '2d' ? '2D Map' : '3D Globe' }}</strong>
@@ -1061,15 +1854,51 @@ watch(
           <section class="war-room__side-card focus-inspector">
             <div class="war-room__side-header">
               <p class="eyebrow">Focus Inspector</p>
-              <button v-if="focusedTarget" class="button button--ghost panel-card__action-link" type="button" @click="clearFocusedTarget()">Clear</button>
+              <div class="focus-inspector__header-actions">
+                <button
+                  v-if="previousFocusTarget"
+                  class="button button--ghost panel-card__action-link focus-inspector__history-button"
+                  type="button"
+                  :title="`Previous focus: ${focusTargetLabel(previousFocusTarget)}`"
+                  @click="restorePreviousFocusTarget()"
+                >
+                  <span aria-hidden="true">←</span>
+                  <span>{{ focusTargetLabel(previousFocusTarget) }}</span>
+                </button>
+                <button
+                  v-if="nextFocusTarget"
+                  class="button button--ghost panel-card__action-link focus-inspector__step-button"
+                  type="button"
+                  :aria-label="`Next focus: ${focusTargetLabel(nextFocusTarget)}`"
+                  :title="`Next focus: ${focusTargetLabel(nextFocusTarget)}`"
+                  @click="restoreNextFocusTarget()"
+                >
+                  <span aria-hidden="true">→</span>
+                </button>
+                <button v-if="focusedTarget" class="button button--ghost panel-card__action-link" type="button" @click="clearFocusedTarget()">Clear</button>
+              </div>
             </div>
 
             <template v-if="focusedSatellite">
               <div class="focus-inspector__hero">
                 <strong>{{ focusedSatellite.member.displayName ?? focusedSatellite.entry.satcat.objectName }}</strong>
                 <p>NORAD {{ focusedSatellite.entry.satcat.catalogNumber }} · {{ focusedSatellite.entry.group }}</p>
+                <div v-if="focusedObjectSummary" class="source-row">
+                  <span class="source-chip" :class="sourceClass(focusedObjectSummary.freshness.tone)">{{ focusedObjectSummary.freshness.label }}</span>
+                  <span class="source-chip" :class="sourceClass(focusedObjectSummary.trustTone)">{{ focusedObjectSummary.trustTier }}</span>
+                </div>
               </div>
               <div class="focus-inspector__actions">
+                <button v-if="focusedObjectSummary" class="button button--ghost" type="button" @click="openEvidence(buildCatalogEvidence(focusedObjectSummary))">Evidence</button>
+                <a
+                  v-if="focusedObjectSummary?.satnogsUrl"
+                  class="button button--ghost"
+                  :href="focusedObjectSummary.satnogsUrl"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  SatNOGS
+                </a>
                 <button class="button button--ghost" type="button" @click="store.toggleFleetMemberHidden(focusedSatellite.member)">
                   {{ store.isFleetMemberHidden(focusedSatellite.member) ? '표시' : '숨기기' }}
                 </button>
@@ -1116,6 +1945,22 @@ watch(
               </div>
             </template>
 
+            <div v-if="focusHistoryItems.length" class="focus-inspector__history" aria-label="Recent focus history">
+              <span>Recent focus</span>
+              <div class="focus-inspector__history-list">
+                <button
+                  v-for="item in focusHistoryItems"
+                  :key="item.key"
+                  class="focus-inspector__chip focus-inspector__chip--history"
+                  type="button"
+                  :title="`Focus on ${item.label}`"
+                  @click="focusTargetOnMap(item.target)"
+                >
+                  {{ item.label }}
+                </button>
+              </div>
+            </div>
+
             <div class="focus-inspector__section">
               <span>Contact Windows</span>
               <article v-for="link in focusedLinks" :key="`${link.satelliteId}-${link.groundStationId}`" class="focus-inspector__row" :class="`focus-inspector__row--${link.status.toLowerCase().replace('_', '-')}`">
@@ -1129,7 +1974,7 @@ watch(
                       }"
                       type="button"
                       :aria-pressed="focusTargetMatches(focusedTarget, satelliteFocusTarget(link.satelliteId))"
-                      @click="setFocusedTarget(satelliteFocusTarget(link.satelliteId))"
+                      @click="focusTargetOnMap(satelliteFocusTarget(link.satelliteId))"
                       @mouseenter="setHoveredTarget(satelliteFocusTarget(link.satelliteId))"
                       @mouseleave="clearHoveredTarget(satelliteFocusTarget(link.satelliteId))"
                       @focus="setHoveredTarget(satelliteFocusTarget(link.satelliteId))"
@@ -1146,7 +1991,7 @@ watch(
                       }"
                       type="button"
                       :aria-pressed="focusTargetMatches(focusedTarget, groundStationFocusTarget(link.groundStationId))"
-                      @click="setFocusedTarget(groundStationFocusTarget(link.groundStationId))"
+                      @click="focusTargetOnMap(groundStationFocusTarget(link.groundStationId))"
                       @mouseenter="setHoveredTarget(groundStationFocusTarget(link.groundStationId))"
                       @mouseleave="clearHoveredTarget(groundStationFocusTarget(link.groundStationId))"
                       @focus="setHoveredTarget(groundStationFocusTarget(link.groundStationId))"
@@ -1156,14 +2001,18 @@ watch(
                     </button>
                   </div>
                   <p>{{ linkStatusLabel(link) }} · el {{ link.elevationDeg.toFixed(1) }}° · az {{ link.azimuthDeg.toFixed(0) }}°</p>
+                  <div class="source-row source-row--compact">
+                    <span class="source-chip source-chip--info">Derived estimate</span>
+                    <button class="source-link" type="button" @click="openEvidence(buildPassEvidence(link))">View evidence</button>
+                  </div>
                 </div>
               </article>
               <p v-if="!focusedLinks.length" class="empty-state">가시권 링크가 없습니다.</p>
             </div>
 
             <div class="focus-inspector__section">
-              <span>CDM</span>
-              <article v-for="item in focusedConjunctions" :key="item.id" class="focus-inspector__row" :class="`focus-inspector__row--${cdmSeverity(item)}`">
+              <span>SOCRATES Screening</span>
+              <article v-for="item in focusedConjunctions" :key="item.id" class="focus-inspector__row" :class="`focus-inspector__row--${cdmDisplayTone(item)}`">
                 <div>
                   <strong>{{ cdmSeverityLabel(item) }} · {{ item.missDistanceKm.toFixed(2) }} km</strong>
                   <div class="focus-inspector__entity-line focus-inspector__entity-line--subtle">
@@ -1204,9 +2053,13 @@ watch(
                     <span v-else class="focus-inspector__chip focus-inspector__chip--static">{{ item.secondary.name }}</span>
                   </div>
                   <p>{{ formatOrbitRelative(item.tca) }}</p>
+                  <div class="source-row source-row--compact">
+                    <span class="source-chip" :class="cdmSourceChipClass(item)">{{ cdmSourceChipLabel(item) }}</span>
+                    <button class="source-link" type="button" @click="openEvidence(buildConjunctionEvidence(item))">View evidence</button>
+                  </div>
                 </div>
               </article>
-              <p v-if="!focusedConjunctions.length" class="empty-state">근접경고 없음</p>
+              <p v-if="!focusedConjunctions.length" class="empty-state">표시할 public screening signal이 없습니다.</p>
             </div>
           </section>
 
@@ -1266,7 +2119,7 @@ watch(
                       </small>
                     </span>
                   </label>
-                  <button class="button button--ghost panel-card__action-link" type="button" @click="setFocusedTarget({ type: 'groundStation', id: station.id })">
+                  <button class="button button--ghost panel-card__action-link" type="button" @click="focusTargetOnMap({ type: 'groundStation', id: station.id })">
                     보기
                   </button>
                 </article>
@@ -1310,17 +2163,34 @@ watch(
                   <div>
                     <strong>{{ item.name }}</strong>
                     <p>{{ item.hidden ? `${item.detail} · briefing 표시 숨김` : item.detail }}</p>
+                    <div class="tracking-scope__object-meta">
+                      <span :class="sourceClass(item.freshness.tone)">{{ item.freshness.label }}</span>
+                      <span :class="sourceClass(item.nextContactTone)">{{ item.nextContactLabel }}</span>
+                      <span :class="sourceClass(item.riskLabel.includes('No current') ? 'info' : 'warn')">{{ item.riskLabel }}</span>
+                      <span :class="sourceClass(item.anomalyCount ? 'warn' : 'info')">{{ item.latestStatusLabel }}{{ item.anomalyCount ? ` · ${item.anomalyCount} open` : '' }}</span>
+                    </div>
                   </div>
                   <div class="tracking-scope__object-actions">
-                    <small>{{ item.hidden ? 'HIDDEN' : item.source }}</small>
+                    <small>{{ item.hidden ? 'HIDDEN' : item.sourceDetail }}</small>
                     <button
                       v-if="item.key.startsWith('catalog:')"
                       class="button button--ghost panel-card__action-link"
                       type="button"
-                      @click="setFocusedTarget({ type: 'satellite', id: item.key })"
+                      @click="focusTargetOnMap({ type: 'satellite', id: item.key })"
                     >
                       보기
                     </button>
+                    <button class="button button--ghost panel-card__action-link" type="button" @click="openEvidence(buildCatalogEvidence(item))">Evidence</button>
+                    <a
+                      v-if="item.satnogsUrl"
+                      class="button button--ghost panel-card__action-link"
+                      :href="item.satnogsUrl"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      SatNOGS
+                    </a>
+                    <button class="button button--ghost panel-card__action-link" type="button" @click="goToFleetNotes">Note</button>
                     <button class="button button--ghost panel-card__action-link" type="button" @click="store.toggleFleetMemberHidden(item.ref)">
                       {{ item.hidden ? '표시' : '숨기기' }}
                     </button>
@@ -1340,7 +2210,7 @@ watch(
     </section>
 
     <div class="briefing-grid">
-    <PanelCard class="briefing-grid__half" title="Live Intel Queue" subtitle="Passive signals">
+    <PanelCard class="briefing-grid__half" title="Signal Queue" subtitle="Actionable OSINT">
       <template #actions>
         <strong class="panel-card__action-link">{{ intelQueue.length }} signals</strong>
       </template>
@@ -1350,8 +2220,15 @@ watch(
             <span>{{ item.kicker }}</span>
             <strong>{{ item.title }}</strong>
             <p>{{ item.detail }}</p>
+            <div class="source-row source-row--light">
+              <span class="source-chip" :class="sourceClass(item.tone)">{{ item.trustTier }}</span>
+              <span class="source-chip source-chip--neutral">{{ item.sourceDetail }}</span>
+            </div>
           </div>
-          <small>{{ item.time }}</small>
+          <div class="war-room__feed-actions">
+            <small>{{ item.time }}</small>
+            <button class="button button--ghost panel-card__action-link action-button" type="button" @click="item.action()">{{ item.actionLabel }}</button>
+          </div>
         </article>
       </div>
     </PanelCard>
@@ -1376,6 +2253,7 @@ watch(
 
     <PanelCard title="Operator Readiness" subtitle="USER-entered mission status">
       <template #actions>
+        <span class="source-chip source-chip--info panel-card__action-link">User supplied</span>
         <OriginBadge v-if="store.fleetHealth.latestRecordedAt" origin="USER" :timestamp="store.fleetHealth.latestRecordedAt" />
       </template>
       <div class="metric-grid">
@@ -1412,6 +2290,8 @@ watch(
 
     <PanelCard title="Space Weather" subtitle="OSINT environmental risk">
       <template #actions>
+        <button class="button button--ghost panel-card__action-link" type="button" @click="openEvidence(buildWeatherEvidence())">Evidence</button>
+        <span class="source-chip source-chip--info panel-card__action-link">NOAA SWPC</span>
         <OriginBadge v-if="store.weather?.fetchedAt" origin="OSINT" :timestamp="store.weather.fetchedAt" />
       </template>
       <div class="metric-grid">
@@ -1421,8 +2301,9 @@ watch(
       <p class="supporting-text">{{ truncate(store.weather?.notices?.[0]?.text ?? '현재 특기사항이 없습니다.', 96) }}</p>
     </PanelCard>
 
-    <PanelCard title="Next Conjunctions" subtitle="SOCRATES Plus screening">
+    <PanelCard title="Public Conjunction Signals" subtitle="CelesTrak SOCRATES screening">
       <template #actions>
+        <span class="source-chip source-chip--warn panel-card__action-link">Public screening</span>
         <OriginBadge v-if="cdmScopeConjunctions[0]?.fetchedAt" origin="OSINT" :timestamp="cdmScopeConjunctions[0].fetchedAt" :stale="store.offline" />
       </template>
       <div class="tracking-scope__tabs cdm-scope__tabs" role="tablist" aria-label="CDM scope">
@@ -1441,12 +2322,15 @@ watch(
       <p v-if="cdmLoading" class="supporting-text">SOCRATES Plus 결과를 불러오는 중입니다.</p>
       <p v-else-if="cdmError" class="supporting-text">{{ cdmError }}</p>
       <div class="stack-list">
-        <article v-for="item in cdmScopeConjunctions.slice(0, 3)" :key="item.id" class="stack-list__item" :class="`stack-list__item--${cdmSeverity(item)}`">
+        <article v-for="item in sortedConjunctionsForDisplay(cdmScopeConjunctions).slice(0, 3)" :key="item.id" class="stack-list__item" :class="`stack-list__item--${cdmDisplayTone(item)}`">
           <div>
             <strong>{{ cdmSeverityLabel(item) }} · {{ item.primary.name }} × {{ item.secondary.name }}</strong>
-            <p>{{ item.missDistanceKm.toFixed(1) }} km miss · {{ item.relVelocityKmS.toFixed(1) }} km/s</p>
+            <p>{{ item.missDistanceKm.toFixed(1) }} km miss · {{ item.relVelocityKmS.toFixed(1) }} km/s · public screening only</p>
           </div>
-          <small>{{ formatOrbitRelative(item.tca) }}</small>
+          <div class="stack-list__actions">
+            <small>{{ formatOrbitRelative(item.tca) }}</small>
+            <button class="button button--ghost panel-card__action-link action-button" type="button" @click="openEvidence(buildConjunctionEvidence(item))">Evidence</button>
+          </div>
         </article>
         <article v-if="!cdmLoading && !cdmScopeConjunctions.length" class="stack-list__item">
           <div>
@@ -1460,6 +2344,7 @@ watch(
 
     <PanelCard title="Upcoming Passes" subtitle="Derived contact windows">
       <template #actions>
+        <span class="source-chip source-chip--info panel-card__action-link">Derived from TLE</span>
         <OriginBadge v-if="store.passPredictions[0]?.computedAt" origin="DERIVED" :timestamp="store.passPredictions[0].computedAt" />
       </template>
       <PassList :passes="store.passPredictions.slice(0, 5)" :station-lookup="stationLookup" />
