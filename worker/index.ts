@@ -22,6 +22,13 @@ interface R2BucketLike {
     },
   ): Promise<unknown>;
   delete(keys: string | string[]): Promise<void>;
+  list?(options?: { prefix?: string; cursor?: string; limit?: number }): Promise<R2ObjectsLike>;
+}
+
+interface R2ObjectsLike {
+  objects: Array<{ key: string }>;
+  truncated: boolean;
+  cursor?: string;
 }
 
 interface CatalogEntry {
@@ -62,7 +69,41 @@ interface ConjunctionRecord {
   pc?: number;
   source: 'celestrak-socrates' | 'self-computed';
   fetchedAt: string;
+  sourceLastModified?: string;
+  snapshotCompletedAt?: string;
   note?: string;
+}
+
+interface NoaaScaleSummary {
+  scale: number | null;
+  label: string;
+  text?: string;
+  observedAt?: string;
+  minorProbabilityPct?: number | null;
+  majorProbabilityPct?: number | null;
+  probabilityPct?: number | null;
+  source: 'NOAA_SWPC' | 'DERIVED';
+}
+
+interface NoaaScaleSnapshot {
+  observedAt?: string;
+  current: {
+    r: NoaaScaleSummary;
+    s: NoaaScaleSummary;
+    g: NoaaScaleSummary;
+  };
+  forecast?: Array<{
+    t: string;
+    r?: NoaaScaleSummary;
+    s?: NoaaScaleSummary;
+    g?: NoaaScaleSummary;
+  }>;
+  previous?: {
+    t: string;
+    r?: NoaaScaleSummary;
+    s?: NoaaScaleSummary;
+    g?: NoaaScaleSummary;
+  };
 }
 
 const CELESTRAK_GROUPS = [
@@ -71,7 +112,7 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v12';
+const API_CACHE_VERSION = 'v15';
 const CACHEABLE_HEADER = 'x-celtrak-cacheable';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
@@ -98,6 +139,8 @@ const SOCRATES_SNAPSHOT_MAX_CHUNKS = 64;
 const SOCRATES_SNAPSHOT_CHUNK_TIMEOUT_MS = 15_000;
 const SOCRATES_SNAPSHOT_STALE_MS = 4 * 60 * 60 * 1000;
 const CELESTRAK_ORIGINS = ['http://celestrak.org', 'https://celestrak.org'] as const;
+const SWPC_NOAA_SCALES_URL = 'https://services.swpc.noaa.gov/products/noaa-scales.json';
+const SWPC_PROTON_FLUX_URL = 'https://services.swpc.noaa.gov/json/goes/primary/integral-protons-3-day.json';
 const CELESTRAK_REQUEST_HEADERS = {
   accept: 'text/plain, text/csv, application/json, */*',
 };
@@ -226,7 +269,12 @@ async function buildApiResponse(url: URL, env: Env) {
     return json(await getCatalog(url, env));
   }
   if (url.pathname === '/api/swpc/summary') {
-    return json(await getSpaceWeatherSummary());
+    const summary = await getSpaceWeatherSummary();
+    return json(
+      summary,
+      200,
+      hasSyntheticSpaceWeatherFallback(summary) ? { [CACHEABLE_HEADER]: 'false', 'cache-control': 'no-store' } : undefined,
+    );
   }
   if (url.pathname === '/api/celestrak/socrates') {
     const records = await getConjunctions(url, env);
@@ -244,6 +292,7 @@ async function buildApiResponse(url: URL, env: Env) {
 async function prewarmScheduledData(env: Env) {
   await prewarmCatalogCache(env);
   await prewarmSocratesSnapshotAndCache(env);
+  await prewarmSpaceWeatherCache(env);
 }
 
 async function prewarmCatalogCache(env: Env) {
@@ -268,6 +317,13 @@ async function prewarmSocratesSnapshotAndCache(env: Env) {
   await refreshApiCache(url, cacheKey, cachePolicy, env);
 }
 
+async function prewarmSpaceWeatherCache(env: Env) {
+  const url = new URL('https://celtrak-cache.internal/api/swpc/summary');
+  const cacheKey = createApiCacheKey(url);
+  const cachePolicy = cachePolicyFor(url, env);
+  await refreshApiCache(url, cacheKey, cachePolicy, env);
+}
+
 async function refreshApiCache(url: URL, cacheKey: Request, cachePolicy: ApiCachePolicy, env: Env) {
   try {
     const response = await buildApiResponse(url, env);
@@ -285,6 +341,16 @@ function isCacheableApiResponse(response: Response) {
 
 function hasSyntheticConjunctionFallback(records: ConjunctionRecord[]) {
   return records.some((item) => item.id.startsWith('fallback-'));
+}
+
+function hasSyntheticSpaceWeatherFallback(summary: unknown) {
+  if (!summary || typeof summary !== 'object') return false;
+  const record = summary as { origin?: unknown; stale?: unknown; notices?: unknown };
+  if (record.origin !== 'STALE' || record.stale !== true || !Array.isArray(record.notices)) return false;
+  return record.notices.some((notice) => {
+    if (!notice || typeof notice !== 'object') return false;
+    return (notice as { type?: unknown }).type === 'FALLBACK';
+  });
 }
 
 async function putApiCache(cacheKey: Request, response: Response, cachePolicy: ApiCachePolicy) {
@@ -504,6 +570,10 @@ async function refreshCatalogSnapshot(env: Env) {
       console.warn('Catalog old snapshot cleanup failed', error);
     });
   }
+
+  await deleteUnreferencedCatalogSnapshots(bucket, manifest).catch((error) => {
+    console.warn('Catalog orphan snapshot cleanup failed', error);
+  });
 
   return true;
 }
@@ -792,8 +862,10 @@ async function getSocratesSnapshotResults(env: Env, order: string, limit: number
 
   return readSocratesSnapshotRecords(bucket, manifest, {
     catalogNumbers,
-    fetchedAt: manifest.sourceLastModified ?? manifest.completedAt,
+    fetchedAt: manifest.completedAt,
     limit,
+    sourceLastModified: manifest.sourceLastModified,
+    snapshotCompletedAt: manifest.completedAt,
   });
 }
 
@@ -809,7 +881,7 @@ async function getSocratesSnapshotManifest(bucket: R2BucketLike, order: string) 
 async function readSocratesSnapshotRecords(
   bucket: R2BucketLike,
   manifest: SocratesSnapshotManifest,
-  options: { catalogNumbers: Set<number>; fetchedAt: string; limit: number },
+  options: { catalogNumbers: Set<number>; fetchedAt: string; limit: number; sourceLastModified?: string; snapshotCompletedAt?: string },
 ) {
   const records: ConjunctionRecord[] = [];
   let lineBuffer = '';
@@ -862,7 +934,7 @@ async function readSocratesSnapshotRecords(
 function parseSocratesCsvLineForSnapshot(
   line: string,
   indexes: Record<string, number> | null,
-  options: { catalogNumbers: Set<number>; fetchedAt: string; stale?: boolean; note?: string },
+  options: { catalogNumbers: Set<number>; fetchedAt: string; stale?: boolean; note?: string; sourceLastModified?: string; snapshotCompletedAt?: string },
 ) {
   const normalizedLine = line.replace(/^\uFEFF/, '').trim();
   if (!normalizedLine) return null;
@@ -948,6 +1020,10 @@ async function refreshSocratesSnapshot(env: Env, order: string) {
     });
   }
 
+  await deleteUnreferencedSocratesSnapshots(bucket, order, manifest).catch((error) => {
+    console.warn('SOCRATES orphan snapshot cleanup failed', error);
+  });
+
   return true;
 }
 
@@ -969,7 +1045,49 @@ function socratesSnapshotRef(manifest: SocratesSnapshotManifest): SocratesSnapsh
 
 async function deleteSocratesSnapshot(bucket: R2BucketLike, snapshot: SocratesSnapshotRef) {
   const keys = snapshot.chunks.map((chunk) => chunk.key);
-  if (keys.length) await bucket.delete(keys);
+  await deleteR2Keys(bucket, keys);
+}
+
+async function deleteUnreferencedSocratesSnapshots(bucket: R2BucketLike, order: string, manifest: SocratesSnapshotManifest) {
+  if (!bucket.list) return;
+  const retain = new Set([
+    ...manifest.chunks.map((chunk) => chunk.key),
+    ...(manifest.previous?.chunks.map((chunk) => chunk.key) ?? []),
+  ]);
+  const staleKeys: string[] = [];
+  for await (const key of listR2Keys(bucket, `socrates/${order}/snapshots/`)) {
+    if (!retain.has(key)) staleKeys.push(key);
+  }
+  await deleteR2Keys(bucket, staleKeys);
+}
+
+async function deleteUnreferencedCatalogSnapshots(bucket: R2BucketLike, manifest: CatalogSnapshotManifest) {
+  if (!bucket.list) return;
+  const retain = new Set([manifest.dataKey, manifest.previous?.dataKey].filter((key): key is string => Boolean(key)));
+  const staleKeys: string[] = [];
+  for await (const key of listR2Keys(bucket, `catalog/${CATALOG_SNAPSHOT_SCOPE}/snapshots/`)) {
+    if (!retain.has(key)) staleKeys.push(key);
+  }
+  await deleteR2Keys(bucket, staleKeys);
+}
+
+async function* listR2Keys(bucket: R2BucketLike, prefix: string) {
+  let cursor: string | undefined;
+  do {
+    const page = await bucket.list?.({ prefix, cursor, limit: 1000 });
+    if (!page) return;
+    for (const object of page.objects) {
+      yield object.key;
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+}
+
+async function deleteR2Keys(bucket: R2BucketLike, keys: string[]) {
+  for (let index = 0; index < keys.length; index += 100) {
+    const batch = keys.slice(index, index + 100);
+    if (batch.length) await bucket.delete(batch);
+  }
 }
 
 function parseSocratesSnapshotManifest(text: string): SocratesSnapshotManifest | null {
@@ -1275,7 +1393,7 @@ function csvHeaderIndexes(headerLine: string) {
 function createSocratesCsvRecord(
   cells: string[],
   indexes: Record<string, number>,
-  options: { catalogNumbers: Set<number>; fetchedAt: string; stale?: boolean; note?: string },
+  options: { catalogNumbers: Set<number>; fetchedAt: string; stale?: boolean; note?: string; sourceLastModified?: string; snapshotCompletedAt?: string },
 ): ConjunctionRecord | null {
   const catalogNumber1 = numberFromCsv(cells[indexes.NORAD_CAT_ID_1]);
   const catalogNumber2 = numberFromCsv(cells[indexes.NORAD_CAT_ID_2]);
@@ -1310,6 +1428,8 @@ function createSocratesCsvRecord(
     pc: numberFromCsv(cells[indexes.MAX_PROB]),
     source: 'celestrak-socrates',
     fetchedAt: options.fetchedAt,
+    ...(options.sourceLastModified ? { sourceLastModified: options.sourceLastModified } : {}),
+    ...(options.snapshotCompletedAt ? { snapshotCompletedAt: options.snapshotCompletedAt } : {}),
     note: options.note,
   };
 }
@@ -1381,33 +1501,79 @@ function normalizeOpsStatus(value: unknown) {
 
 async function getSpaceWeatherSummary() {
   const fetchedAt = new Date().toISOString();
-  try {
-    const [xrayRows, kpRows, alerts] = await Promise.all([
-      fetchJson<unknown[]>('https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json'),
-      fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json'),
-      fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/alerts.json').catch(() => []),
-    ]);
-    const xraySeries = normalizeXraySeries(xrayRows);
-    const latestFlux = xraySeries.at(-1)?.flux ?? null;
-    const kp = normalizeKp(kpRows);
-    return {
-      origin: 'OSINT',
-      fetchedAt,
-      xray: {
-        currentWm2: latestFlux,
-        ...classifyXray(latestFlux),
-        series: xraySeries,
-      },
-      kp: {
-        current: kp.current,
-        forecast: kp.forecast,
-        storm: classifyKpStorm(kp.current),
-      },
-      notices: normalizeAlerts(alerts),
-    };
-  } catch {
-    return createSpaceWeatherFallback();
+  const [xrayResult, kpResult, alertsResult, scalesResult, protonResult] = await Promise.allSettled([
+    fetchJson<unknown[]>('https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json'),
+    fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json'),
+    fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/alerts.json'),
+    fetchJson<unknown>(SWPC_NOAA_SCALES_URL),
+    fetchJson<unknown[]>(SWPC_PROTON_FLUX_URL),
+  ]);
+
+  const xrayRows = xrayResult.status === 'fulfilled' && Array.isArray(xrayResult.value) ? xrayResult.value : [];
+  const kpRows = kpResult.status === 'fulfilled' && Array.isArray(kpResult.value) ? kpResult.value : [];
+  const protonRows = protonResult.status === 'fulfilled' && Array.isArray(protonResult.value) ? protonResult.value : [];
+  const xraySeries = normalizeXraySeries(xrayRows);
+  const latestFlux = xraySeries.at(-1)?.flux ?? null;
+  const kp = normalizeKp(kpRows);
+  const proton = normalizeProtonFlux(protonRows);
+  const noaaScales = scalesResult.status === 'fulfilled' ? normalizeNoaaScales(scalesResult.value) : null;
+  const scales = noaaScales ?? deriveNoaaScales({ fetchedAt, xrayFlux: latestFlux, protonPfu: proton.currentPfu, kp: kp.current });
+  const xrayMissing = !xraySeries.length;
+  const kpMissing = kp.current === null && !kp.forecast.length;
+  const protonMissing = proton.currentPfu === null;
+  const scalesMissing = !noaaScales;
+
+  if (xrayMissing && kpMissing && protonMissing && scalesMissing) return createSpaceWeatherFallback();
+
+  const notices = alertsResult.status === 'fulfilled' ? normalizeAlerts(alertsResult.value) : [];
+  const sourceNotices: Array<{ issuedAt: string; type: string; text: string }> = [];
+  if (xrayMissing) {
+    sourceNotices.push({
+      issuedAt: fetchedAt,
+      type: 'SOURCE_PARTIAL',
+      text: 'SWPC GOES X-ray feed unavailable; showing remaining public space weather data.',
+    });
   }
+  if (kpMissing) {
+    sourceNotices.push({
+      issuedAt: fetchedAt,
+      type: 'SOURCE_PARTIAL',
+      text: 'SWPC Kp feed unavailable; showing remaining public space weather data.',
+    });
+  }
+  if (protonMissing) {
+    sourceNotices.push({
+      issuedAt: fetchedAt,
+      type: 'SOURCE_PARTIAL',
+      text: 'SWPC GOES proton feed unavailable; radiation storm scale may be incomplete.',
+    });
+  }
+  if (scalesMissing) {
+    sourceNotices.push({
+      issuedAt: fetchedAt,
+      type: 'SOURCE_PARTIAL',
+      text: 'SWPC NOAA Scales summary unavailable; deriving current R/S/G from public X-ray, proton, and Kp feeds.',
+    });
+  }
+
+  return {
+    origin: 'OSINT',
+    stale: sourceNotices.length ? true : undefined,
+    fetchedAt,
+    xray: {
+      currentWm2: latestFlux,
+      ...classifyXray(latestFlux),
+      series: xraySeries,
+    },
+    kp: {
+      current: kp.current,
+      forecast: kp.forecast,
+      storm: classifyKpStorm(kp.current),
+    },
+    proton,
+    scales,
+    notices: [...sourceNotices, ...notices].slice(0, 5),
+  };
 }
 
 function normalizeXraySeries(rows: unknown[]) {
@@ -1448,6 +1614,156 @@ function normalizeKpRows(raw: unknown[]) {
     .filter(Array.isArray)
     .map((row) => ({ t: String(row[timeIndex >= 0 ? timeIndex : 0]), kp: Number(row[kpIndex >= 0 ? kpIndex : 1]) }))
     .filter((row) => row.t && Number.isFinite(row.kp));
+}
+
+function normalizeProtonFlux(raw: unknown[]) {
+  const rows = raw
+    .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
+    .filter((row) => cleanString(row.energy) === '>=10 MeV')
+    .map((row) => ({
+      t: cleanString(row.time_tag),
+      flux: numberFromUnknown(row.flux),
+    }))
+    .filter((row): row is { t: string; flux: number } => Boolean(row.t) && Number.isFinite(row.flux))
+    .sort((left, right) => left.t.localeCompare(right.t));
+
+  const latest = rows.at(-1);
+  return {
+    currentPfu: latest?.flux ?? null,
+    energy: '>=10 MeV',
+    observedAt: latest?.t,
+  };
+}
+
+function normalizeNoaaScales(raw: unknown): NoaaScaleSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const current = normalizeNoaaScaleRecord(record['0'], 'NOAA_SWPC');
+  if (!current) return null;
+
+  const forecast = ['1', '2', '3']
+    .map((key) => normalizeNoaaScaleRecord(record[key], 'NOAA_SWPC'))
+    .filter((item): item is NonNullable<ReturnType<typeof normalizeNoaaScaleRecord>> => Boolean(item))
+    .map((item) => ({
+      t: item.t,
+      r: item.r,
+      s: item.s,
+      g: item.g,
+    }));
+  const previous = normalizeNoaaScaleRecord(record['-1'], 'NOAA_SWPC');
+
+  return {
+    observedAt: current.t,
+    current: {
+      r: current.r,
+      s: current.s,
+      g: current.g,
+    },
+    forecast: forecast.length ? forecast : undefined,
+    previous: previous
+      ? {
+          t: previous.t,
+          r: previous.r,
+          s: previous.s,
+          g: previous.g,
+        }
+      : undefined,
+  };
+}
+
+function normalizeNoaaScaleRecord(raw: unknown, source: NoaaScaleSummary['source']) {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const t = swpcDateTime(record.DateStamp, record.TimeStamp);
+  if (!t) return null;
+  return {
+    t,
+    r: normalizeNoaaScale('R', record.R, t, source),
+    s: normalizeNoaaScale('S', record.S, t, source),
+    g: normalizeNoaaScale('G', record.G, t, source),
+  };
+}
+
+function normalizeNoaaScale(kind: 'R' | 'S' | 'G', raw: unknown, observedAt: string, source: NoaaScaleSummary['source']): NoaaScaleSummary {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const scale = numberFromUnknown(record.Scale);
+  return {
+    scale: scale ?? null,
+    label: scale === undefined ? `${kind}—` : `${kind}${scale}`,
+    text: cleanString(record.Text) ?? (scale === undefined ? undefined : noaaScaleText(kind, scale)),
+    observedAt,
+    minorProbabilityPct: numberFromUnknown(record.MinorProb) ?? null,
+    majorProbabilityPct: numberFromUnknown(record.MajorProb) ?? null,
+    probabilityPct: numberFromUnknown(record.Prob) ?? null,
+    source,
+  };
+}
+
+function swpcDateTime(dateValue: unknown, timeValue: unknown) {
+  const date = cleanString(dateValue);
+  if (!date) return undefined;
+  const time = cleanString(timeValue) ?? '00:00:00';
+  const parsed = new Date(`${date}T${time.replace(/\s+/g, '')}Z`);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : undefined;
+}
+
+function deriveNoaaScales(options: { fetchedAt: string; xrayFlux: number | null; protonPfu: number | null; kp: number | null }): NoaaScaleSnapshot {
+  const rScale = classifyRadioBlackoutScale(options.xrayFlux);
+  const sScale = classifyRadiationStormScale(options.protonPfu);
+  const gScale = classifyGeomagneticScale(options.kp);
+  return {
+    observedAt: options.fetchedAt,
+    current: {
+      r: derivedNoaaScale('R', rScale, options.fetchedAt),
+      s: derivedNoaaScale('S', sScale, options.fetchedAt),
+      g: derivedNoaaScale('G', gScale, options.fetchedAt),
+    },
+  };
+}
+
+function derivedNoaaScale(kind: 'R' | 'S' | 'G', scale: number | null, observedAt: string): NoaaScaleSummary {
+  return {
+    scale,
+    label: scale === null ? `${kind}—` : `${kind}${scale}`,
+    text: scale === null ? undefined : noaaScaleText(kind, scale),
+    observedAt,
+    minorProbabilityPct: null,
+    majorProbabilityPct: null,
+    probabilityPct: null,
+    source: 'DERIVED',
+  };
+}
+
+function classifyRadioBlackoutScale(flux: number | null) {
+  if (!flux || flux < 1e-5) return 0;
+  if (flux >= 2e-3) return 5;
+  if (flux >= 1e-3) return 4;
+  if (flux >= 1e-4) return 3;
+  if (flux >= 5e-5) return 2;
+  return 1;
+}
+
+function classifyRadiationStormScale(protonPfu: number | null) {
+  if (protonPfu === null || protonPfu < 10) return 0;
+  if (protonPfu >= 100_000) return 5;
+  if (protonPfu >= 10_000) return 4;
+  if (protonPfu >= 1_000) return 3;
+  if (protonPfu >= 100) return 2;
+  return 1;
+}
+
+function classifyGeomagneticScale(kp: number | null) {
+  if (kp === null || kp < 5) return 0;
+  if (kp >= 9) return 5;
+  if (kp >= 8) return 4;
+  if (kp >= 7) return 3;
+  if (kp >= 6) return 2;
+  return 1;
+}
+
+function noaaScaleText(kind: 'R' | 'S' | 'G', scale: number) {
+  const labels = kind === 'R' ? ['none', 'minor', 'moderate', 'strong', 'severe', 'extreme'] : ['none', 'minor', 'moderate', 'strong', 'severe', 'extreme'];
+  return labels[Math.min(Math.max(Math.round(scale), 0), labels.length - 1)];
 }
 
 function normalizeAlerts(raw: unknown[]) {
@@ -1591,6 +1907,8 @@ function createSpaceWeatherFallback() {
     fetchedAt,
     xray: { currentWm2: null, series: [] },
     kp: { current: null, forecast: [], storm: 'QUIET' },
+    proton: { currentPfu: null, energy: '>=10 MeV' },
+    scales: deriveNoaaScales({ fetchedAt, xrayFlux: null, protonPfu: null, kp: null }),
     notices: [{ issuedAt: fetchedAt, type: 'FALLBACK', text: 'SWPC upstream unavailable; showing stale-safe fallback.' }],
   };
 }

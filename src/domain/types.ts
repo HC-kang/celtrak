@@ -174,6 +174,8 @@ export interface ConjunctionRecord extends TimestampedOrigin {
   pc?: number;
   source: 'celestrak-socrates' | 'self-computed';
   fetchedAt: string;
+  sourceLastModified?: string;
+  snapshotCompletedAt?: string;
   note?: string;
 }
 
@@ -195,7 +197,43 @@ export interface SpaceWeatherSnapshot extends TimestampedOrigin {
     forecast?: Array<{ t: string; kp: number }>;
     storm: 'QUIET' | 'UNSETTLED' | 'MINOR' | 'MODERATE' | 'STRONG' | 'SEVERE' | 'EXTREME';
   };
+  proton?: {
+    currentPfu: number | null;
+    energy: string;
+    observedAt?: string;
+  };
+  scales?: {
+    observedAt?: string;
+    current: {
+      r: NoaaScaleSummary;
+      s: NoaaScaleSummary;
+      g: NoaaScaleSummary;
+    };
+    forecast?: Array<{
+      t: string;
+      r?: NoaaScaleSummary;
+      s?: NoaaScaleSummary;
+      g?: NoaaScaleSummary;
+    }>;
+    previous?: {
+      t: string;
+      r?: NoaaScaleSummary;
+      s?: NoaaScaleSummary;
+      g?: NoaaScaleSummary;
+    };
+  };
   notices?: Array<{ issuedAt: string; type: string; text: string }>;
+}
+
+export interface NoaaScaleSummary {
+  scale: number | null;
+  label: string;
+  text?: string;
+  observedAt?: string;
+  minorProbabilityPct?: number | null;
+  majorProbabilityPct?: number | null;
+  probabilityPct?: number | null;
+  source: 'NOAA_SWPC' | 'DERIVED';
 }
 
 export interface DecayPrediction extends TimestampedOrigin {

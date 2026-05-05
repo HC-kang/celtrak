@@ -1,5 +1,5 @@
 const SHELL_CACHE = 'orbit-lab-shell-v1';
-const RUNTIME_CACHE = 'orbit-lab-runtime-v2';
+const RUNTIME_CACHE = 'orbit-lab-runtime-v3';
 const SHELL_ASSETS = ['/', '/offline.html'];
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
 

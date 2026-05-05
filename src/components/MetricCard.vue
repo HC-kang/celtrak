@@ -3,7 +3,7 @@ defineProps<{
   label: string;
   value: string;
   hint?: string;
-  tone?: 'default' | 'good' | 'warn' | 'critical';
+  tone?: 'default' | 'good' | 'warn' | 'orange' | 'critical';
 }>();
 </script>
 

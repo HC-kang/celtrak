@@ -114,6 +114,27 @@ export const mockWeather: SpaceWeatherSnapshot = {
     ],
     storm: 'UNSETTLED',
   },
+  proton: {
+    currentPfu: 0.24,
+    energy: '>=10 MeV',
+    observedAt: fetchedAt,
+  },
+  scales: {
+    observedAt: fetchedAt,
+    current: {
+      r: { scale: 0, label: 'R0', text: 'none', observedAt: fetchedAt, source: 'NOAA_SWPC' },
+      s: { scale: 0, label: 'S0', text: 'none', observedAt: fetchedAt, source: 'NOAA_SWPC' },
+      g: { scale: 0, label: 'G0', text: 'none', observedAt: fetchedAt, source: 'NOAA_SWPC' },
+    },
+    forecast: [
+      {
+        t: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+        r: { scale: null, label: 'R—', minorProbabilityPct: 30, majorProbabilityPct: 5, source: 'NOAA_SWPC' },
+        s: { scale: null, label: 'S—', probabilityPct: 5, source: 'NOAA_SWPC' },
+        g: { scale: 1, label: 'G1', text: 'minor', source: 'NOAA_SWPC' },
+      },
+    ],
+  },
   notices: [
     {
       issuedAt: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
@@ -163,22 +184,7 @@ export const mockDecay: DecayPrediction[] = [
 
 export const mockGroundStations: GroundStation[] = defaultGroundStations;
 
-export const mockAlerts: DashboardAlert[] = [
-  {
-    id: 'alert-weather',
-    kind: 'weather',
-    title: '우주 기상 주의',
-    detail: 'NOAA Kp 4.0, 통신 링크 감쇠 가능성이 있습니다.',
-    tone: 'warn',
-  },
-  {
-    id: 'alert-socrates',
-    kind: 'degraded',
-    title: 'SOCRATES 최신화 지연',
-    detail: '근접 접근 리스트가 3시간 전 스냅샷일 수 있습니다.',
-    tone: 'info',
-  },
-];
+export const mockAlerts: DashboardAlert[] = [];
 
 function createCatalogEntry(input: {
   catalogNumber: number;
