@@ -7,6 +7,10 @@ directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 
+[[r2_buckets]]
+binding = "SOCRATES_BUCKET"
+bucket_name = "celtrak-socrates-cache"
+
 [triggers]
 crons = ["37 */2 * * *"]
 

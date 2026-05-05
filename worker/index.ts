@@ -1,10 +1,28 @@
 interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
+  SOCRATES_BUCKET?: R2BucketLike;
   CACHE_TTL_SECONDS?: string;
   CATALOG_CACHE_TTL_SECONDS?: string;
 }
 
 type DataOrigin = 'OSINT' | 'DERIVED' | 'USER' | 'STALE';
+
+interface R2ObjectBodyLike {
+  text(): Promise<string>;
+}
+
+interface R2BucketLike {
+  get(key: string): Promise<R2ObjectBodyLike | null>;
+  put(
+    key: string,
+    value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob,
+    options?: {
+      httpMetadata?: { contentType?: string };
+      customMetadata?: Record<string, string>;
+    },
+  ): Promise<unknown>;
+  delete(keys: string | string[]): Promise<void>;
+}
 
 interface CatalogEntry {
   origin: DataOrigin;
@@ -53,21 +71,71 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v7';
+const API_CACHE_VERSION = 'v12';
+const CACHEABLE_HEADER = 'x-celtrak-cacheable';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
 const MAX_CATALOG_NUMBER_LOOKUP = 100;
 const DEFAULT_CONJUNCTION_LIMIT = 500;
 const MAX_CONJUNCTION_LIMIT = 2_000;
+const MAX_SOCRATES_SEARCH_RESULTS = 1_000;
+const MAX_SOCRATES_CATALOG_SEARCH_RESULTS = 100;
 const DEFAULT_API_CACHE_TTL_SECONDS = 900;
 // CelesTrak GP/SATCAT does not provide usable expiry headers and asks clients not to refetch more than once per 2 hours.
 const DEFAULT_CATALOG_CACHE_TTL_SECONDS = 9_000;
 const CATALOG_ORIGIN_REFRESH_SECONDS = 7_200;
+const CATALOG_SNAPSHOT_SCOPE = 'public-index';
 const TLE_FETCH_TIMEOUT_MS = 20_000;
 const SATCAT_FETCH_TIMEOUT_MS = 20_000;
 const CATNR_TLE_FETCH_TIMEOUT_MS = 6_000;
 const CATNR_SATCAT_FETCH_TIMEOUT_MS = 3_000;
 const SOCRATES_FETCH_TIMEOUT_MS = 30_000;
+const SOCRATES_RANGE_BYTES = 512 * 1024;
+const SOCRATES_FILTERED_RANGE_BYTES = 4 * 1024 * 1024;
+const SOCRATES_SNAPSHOT_ORDER = 'minRange';
+const SOCRATES_SNAPSHOT_CHUNK_BYTES = 1024 * 1024;
+const SOCRATES_SNAPSHOT_MAX_CHUNKS = 64;
+const SOCRATES_SNAPSHOT_CHUNK_TIMEOUT_MS = 15_000;
+const SOCRATES_SNAPSHOT_STALE_MS = 4 * 60 * 60 * 1000;
+const CELESTRAK_ORIGINS = ['http://celestrak.org', 'https://celestrak.org'] as const;
+const CELESTRAK_REQUEST_HEADERS = {
+  accept: 'text/plain, text/csv, application/json, */*',
+};
+
+interface SocratesSnapshotChunk {
+  key: string;
+  start: number;
+  end: number;
+  size: number;
+}
+
+interface SocratesSnapshotRef {
+  snapshotId: string;
+  completedAt: string;
+  chunks: SocratesSnapshotChunk[];
+}
+
+interface SocratesSnapshotManifest extends SocratesSnapshotRef {
+  version: 1;
+  order: string;
+  source: 'celestrak-socrates-csv';
+  sourceUrl: string;
+  sourceLastModified?: string;
+  totalBytes?: number;
+  chunkSizeBytes: number;
+  previous?: SocratesSnapshotRef;
+}
+
+interface CatalogSnapshotManifest {
+  version: 1;
+  scope: string;
+  source: 'celestrak-gp-catalog';
+  snapshotId: string;
+  completedAt: string;
+  dataKey: string;
+  count: number;
+  previous?: { snapshotId: string; dataKey: string; completedAt: string };
+}
 
 class CatalogLookupMissError extends Error {
   constructor(message: string) {
@@ -111,8 +179,8 @@ export default {
 
     return env.ASSETS.fetch(request);
   },
-  async scheduled(_controller: unknown, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(prewarmCatalogCache(env));
+  async scheduled(_controller: unknown, env: Env, _ctx: ExecutionContext) {
+    await prewarmScheduledData(env);
   },
 };
 
@@ -128,38 +196,41 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
   const cached = await caches.default.match(cacheKey);
   if (cached) {
     if (shouldRefreshCached(cached, cachePolicy.refreshAfterSeconds)) {
-      ctx.waitUntil(refreshApiCache(url, cacheKey, cachePolicy));
+      ctx.waitUntil(refreshApiCache(url, cacheKey, cachePolicy, env));
     }
     return withCacheControl(cached, 'no-cache');
   }
 
   let response: Response;
   try {
-    response = await buildApiResponse(url);
+    response = await buildApiResponse(url, env);
   } catch (error) {
     response = json({ error: 'API upstream failed', detail: error instanceof Error ? error.message : 'unknown' }, 502);
   }
 
-  if (response.ok) {
+  if (response.ok && isCacheableApiResponse(response)) {
     ctx.waitUntil(putApiCache(cacheKey, response.clone(), cachePolicy));
+  }
+  if (!response.headers.has('cache-control')) {
     response.headers.set('cache-control', 'no-cache');
   }
 
   return response;
 }
 
-async function buildApiResponse(url: URL) {
+async function buildApiResponse(url: URL, env: Env) {
   if (url.pathname === '/api/health') {
     return json({ ok: true, service: 'celestrak-orbit-lab-pro', timestamp: new Date().toISOString() });
   }
   if (url.pathname === '/api/celestrak/catalog' || url.pathname === '/api/celestrak/gp') {
-    return json(await getCatalog(url));
+    return json(await getCatalog(url, env));
   }
   if (url.pathname === '/api/swpc/summary') {
     return json(await getSpaceWeatherSummary());
   }
   if (url.pathname === '/api/celestrak/socrates') {
-    return json(await getConjunctions(url));
+    const records = await getConjunctions(url, env);
+    return json(records, 200, hasSyntheticConjunctionFallback(records) ? { [CACHEABLE_HEADER]: 'false', 'cache-control': 'no-store' } : undefined);
   }
   if (url.pathname === '/api/celestrak/decay') {
     return json(createDecayFallback('Decay feed parser pending'));
@@ -170,24 +241,50 @@ async function buildApiResponse(url: URL) {
   return json({ error: 'Not found' }, 404);
 }
 
+async function prewarmScheduledData(env: Env) {
+  await prewarmCatalogCache(env);
+  await prewarmSocratesSnapshotAndCache(env);
+}
+
 async function prewarmCatalogCache(env: Env) {
   const url = new URL('https://celtrak-cache.internal/api/celestrak/catalog?group=active&limit=20000');
   const cacheKey = createApiCacheKey(url);
   const cachePolicy = cachePolicyFor(url, env);
   const cached = await caches.default.match(cacheKey);
   if (cached && !shouldRefreshCached(cached, cachePolicy.refreshAfterSeconds)) return;
-  await refreshApiCache(url, cacheKey, cachePolicy);
+  await refreshApiCache(url, cacheKey, cachePolicy, env);
 }
 
-async function refreshApiCache(url: URL, cacheKey: Request, cachePolicy: ApiCachePolicy) {
+async function prewarmSocratesSnapshotAndCache(env: Env) {
   try {
-    const response = await buildApiResponse(url);
-    if (response.ok) {
+    await refreshSocratesSnapshot(env, SOCRATES_SNAPSHOT_ORDER);
+  } catch (error) {
+    console.warn('SOCRATES snapshot refresh failed', error);
+  }
+
+  const url = new URL('https://celtrak-cache.internal/api/celestrak/socrates?order=MINRANGE&limit=500');
+  const cacheKey = createApiCacheKey(url);
+  const cachePolicy = cachePolicyFor(url, env);
+  await refreshApiCache(url, cacheKey, cachePolicy, env);
+}
+
+async function refreshApiCache(url: URL, cacheKey: Request, cachePolicy: ApiCachePolicy, env: Env) {
+  try {
+    const response = await buildApiResponse(url, env);
+    if (response.ok && isCacheableApiResponse(response)) {
       await putApiCache(cacheKey, response, cachePolicy);
     }
   } catch (error) {
     console.warn('API cache refresh failed', error);
   }
+}
+
+function isCacheableApiResponse(response: Response) {
+  return response.headers.get(CACHEABLE_HEADER) !== 'false';
+}
+
+function hasSyntheticConjunctionFallback(records: ConjunctionRecord[]) {
+  return records.some((item) => item.id.startsWith('fallback-'));
 }
 
 async function putApiCache(cacheKey: Request, response: Response, cachePolicy: ApiCachePolicy) {
@@ -298,14 +395,31 @@ function socratesOrderFromUrl(url: URL) {
   return 'minRange';
 }
 
-async function getCatalog(url: URL): Promise<CatalogEntry[]> {
+async function getCatalog(url: URL, env: Env): Promise<CatalogEntry[]> {
   const catalogNumbers = catalogNumbersFromUrl(url);
   if (catalogNumbers.length) {
-    return getCatalogByCatalogNumbers(catalogNumbers.slice(0, MAX_CATALOG_NUMBER_LOOKUP));
+    return getCatalogByCatalogNumbers(catalogNumbers.slice(0, MAX_CATALOG_NUMBER_LOOKUP), env);
   }
 
   const requestedGroup = catalogGroupFromUrl(url);
   const limit = catalogLimitFromUrl(url);
+  const requestedKnownGroup = requestedGroup
+    ? CELESTRAK_GROUPS.find((group) => group.key === requestedGroup || group.label.toLowerCase() === requestedGroup)
+    : null;
+  if (requestedKnownGroup || !requestedGroup) {
+    const snapshot = await getCatalogSnapshotEntries(env).catch((error) => {
+      console.warn('Catalog snapshot read failed', error);
+      return null;
+    });
+    if (snapshot) {
+      const entries = requestedKnownGroup
+        ? snapshot.filter((entry) => entry.group.toLowerCase() === requestedKnownGroup.label.toLowerCase())
+        : dedupeCatalog(snapshot);
+      return entries.slice(0, limit);
+    }
+    throw new Error('CelesTrak catalog snapshot unavailable; waiting for scheduled ingest');
+  }
+
   const groups = requestedGroup ? CELESTRAK_GROUPS.filter((group) => group.key === requestedGroup || group.label.toLowerCase() === requestedGroup) : CELESTRAK_GROUPS;
   const selectedGroups = groups.length ? groups : CELESTRAK_GROUPS;
   const fetchedAt = new Date().toISOString();
@@ -325,23 +439,151 @@ async function getCatalog(url: URL): Promise<CatalogEntry[]> {
   return dedupeCatalog(entries).slice(0, limit);
 }
 
-async function getCatalogByCatalogNumbers(catalogNumbers: number[]): Promise<CatalogEntry[]> {
-  const fetchedAt = new Date().toISOString();
-  const lookupResults = await Promise.allSettled(
-    catalogNumbers.map((catalogNumber) => lookupCatalogNumber(catalogNumber, fetchedAt)),
-  );
+async function getCatalogByCatalogNumbers(catalogNumbers: number[], env: Env): Promise<CatalogEntry[]> {
+  const wanted = new Set(catalogNumbers);
+  const snapshot = await getCatalogSnapshotEntries(env).catch((error) => {
+    console.warn('Catalog snapshot read failed', error);
+    return null;
+  });
+  if (snapshot) return filterCatalogEntriesByCatalogNumbers(snapshot, wanted);
 
-  const entries = lookupResults.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
-  const hasCompletedLookup = lookupResults.some((result) => result.status === 'fulfilled');
-  if (!entries.length) {
-    if (hasCompletedLookup) return [];
-    const failures = lookupResults
-      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      .map((result) => (result.reason instanceof Error ? result.reason.message : 'unknown'))
-      .join('; ');
-    throw new Error(`CelesTrak catalog lookup unavailable${failures ? `: ${failures}` : ''}`);
+  throw new Error('CelesTrak catalog snapshot unavailable; waiting for scheduled ingest');
+}
+
+function filterCatalogEntriesByCatalogNumbers(entries: CatalogEntry[], catalogNumbers: Set<number>) {
+  return dedupeCatalog(entries.filter((entry) => catalogNumbers.has(entry.satcat.catalogNumber)));
+}
+
+async function refreshCatalogSnapshot(env: Env) {
+  const bucket = env.SOCRATES_BUCKET;
+  if (!bucket) return false;
+
+  const previousManifest = await getCatalogSnapshotManifest(bucket).catch(() => null);
+  const entries = await getSnapshotCatalogEntriesFromCelesTrak();
+  if (!entries.length) throw new Error('CelesTrak catalog snapshot produced no entries');
+
+  const snapshotId = new Date().toISOString().replace(/[^0-9A-Za-z]/g, '');
+  const completedAt = new Date().toISOString();
+  const dataKey = `catalog/${CATALOG_SNAPSHOT_SCOPE}/snapshots/${snapshotId}.json`;
+  await bucket.put(dataKey, JSON.stringify(entries), {
+    httpMetadata: { contentType: 'application/json; charset=utf-8' },
+    customMetadata: {
+      scope: CATALOG_SNAPSHOT_SCOPE,
+      snapshotId,
+      completedAt,
+    },
+  });
+
+  const manifest: CatalogSnapshotManifest = {
+    version: 1,
+    scope: CATALOG_SNAPSHOT_SCOPE,
+    source: 'celestrak-gp-catalog',
+    snapshotId,
+    completedAt,
+    dataKey,
+    count: entries.length,
+    previous: previousManifest
+      ? {
+          snapshotId: previousManifest.snapshotId,
+          dataKey: previousManifest.dataKey,
+          completedAt: previousManifest.completedAt,
+        }
+      : undefined,
+  };
+  await bucket.put(catalogSnapshotManifestKey(), JSON.stringify(manifest), {
+    httpMetadata: { contentType: 'application/json; charset=utf-8' },
+    customMetadata: {
+      scope: CATALOG_SNAPSHOT_SCOPE,
+      snapshotId,
+      completedAt,
+    },
+  });
+
+  if (previousManifest?.previous?.dataKey) {
+    await bucket.delete(previousManifest.previous.dataKey).catch((error) => {
+      console.warn('Catalog old snapshot cleanup failed', error);
+    });
   }
-  return dedupeCatalog(entries);
+
+  return true;
+}
+
+async function getCatalogSnapshotEntries(env: Env) {
+  const bucket = env.SOCRATES_BUCKET;
+  if (!bucket) return null;
+
+  const manifest = await getCatalogSnapshotManifest(bucket);
+  if (!manifest) return null;
+
+  const object = await bucket.get(manifest.dataKey);
+  if (!object) throw new Error(`Catalog snapshot data missing: ${manifest.dataKey}`);
+  const entries = parseJsonResponse<CatalogEntry[]>(manifest.dataKey, await object.text());
+  return Array.isArray(entries) ? entries : null;
+}
+
+async function getCatalogSnapshotManifest(bucket: R2BucketLike) {
+  const object = await bucket.get(catalogSnapshotManifestKey());
+  if (!object) return null;
+  const parsed = parseCatalogSnapshotManifest(await object.text());
+  if (!parsed || parsed.scope !== CATALOG_SNAPSHOT_SCOPE) return null;
+  return parsed;
+}
+
+function parseCatalogSnapshotManifest(text: string): CatalogSnapshotManifest | null {
+  try {
+    const value = JSON.parse(text) as Partial<CatalogSnapshotManifest>;
+    if (
+      value.version !== 1 ||
+      value.scope !== CATALOG_SNAPSHOT_SCOPE ||
+      value.source !== 'celestrak-gp-catalog' ||
+      !value.snapshotId ||
+      !value.completedAt ||
+      !value.dataKey ||
+      !Number.isFinite(value.count)
+    ) {
+      return null;
+    }
+    return {
+      version: 1,
+      scope: value.scope,
+      source: 'celestrak-gp-catalog',
+      snapshotId: value.snapshotId,
+      completedAt: value.completedAt,
+      dataKey: value.dataKey,
+      count: value.count,
+      previous: isCatalogSnapshotRef(value.previous) ? value.previous : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isCatalogSnapshotRef(value: unknown): value is { snapshotId: string; dataKey: string; completedAt: string } {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<{ snapshotId: string; dataKey: string; completedAt: string }>;
+  return Boolean(record.snapshotId && record.dataKey && record.completedAt);
+}
+
+function catalogSnapshotManifestKey() {
+  return `catalog/${CATALOG_SNAPSHOT_SCOPE}/latest.json`;
+}
+
+async function getSnapshotCatalogEntriesFromCelesTrak() {
+  const fetchedAt = new Date().toISOString();
+  const satcatByCatalog = new Map<number, CelestrakSatcatRecord>();
+  const settled = await Promise.allSettled(
+    CELESTRAK_GROUPS.map((group) =>
+      fetchTleGroup(group.key).then((tle) => parseTleCatalog(tle, group.label, fetchedAt, satcatByCatalog)),
+    ),
+  );
+  const tleEntries = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+  for (const result of settled) {
+    if (result.status === 'rejected') {
+      console.warn('CelesTrak GP snapshot fetch failed', result.reason);
+    }
+  }
+
+  return tleEntries;
 }
 
 async function lookupCatalogNumber(catalogNumber: number, fetchedAt: string): Promise<CatalogEntry[]> {
@@ -376,13 +618,13 @@ function settlePromise<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>>
   );
 }
 
-function catalogEntryFromSatcat(record: CelestrakSatcatRecord, fetchedAt: string): CatalogEntry | null {
+function catalogEntryFromSatcat(record: CelestrakSatcatRecord, fetchedAt: string, group = 'SATCAT'): CatalogEntry | null {
   const catalogNumber = Number(record.NORAD_CAT_ID);
   if (!Number.isFinite(catalogNumber)) return null;
   return {
     origin: 'OSINT',
     fetchedAt,
-    group: 'SATCAT',
+    group,
     satcat: {
       catalogNumber,
       objectId: cleanString(record.OBJECT_ID) ?? '',
@@ -401,16 +643,12 @@ function catalogEntryFromSatcat(record: CelestrakSatcatRecord, fetchedAt: string
 }
 
 async function fetchTleGroup(group: string) {
-  const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${encodeURIComponent(group)}&FORMAT=tle`;
-  const { response, text } = await fetchTextWithTimeout(url, TLE_FETCH_TIMEOUT_MS);
-  if (!response.ok) throw new Error(`CelesTrak ${group} ${response.status}`);
+  const { text } = await fetchCelestrakText(`/NORAD/elements/gp.php?GROUP=${encodeURIComponent(group)}&FORMAT=tle`, TLE_FETCH_TIMEOUT_MS);
   return text;
 }
 
 async function fetchTleByCatalogNumber(catalogNumber: number, timeoutMs = TLE_FETCH_TIMEOUT_MS) {
-  const url = `https://celestrak.org/NORAD/elements/gp.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=tle`;
-  const { response, text } = await fetchTextWithTimeout(url, timeoutMs);
-  if (!response.ok) throw new Error(`CelesTrak CATNR=${catalogNumber} ${response.status}`);
+  const { text } = await fetchCelestrakText(`/NORAD/elements/gp.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=tle`, timeoutMs);
   if (!text.trim() || /No GP data found/i.test(text)) {
     throw new CatalogLookupMissError(`CelesTrak CATNR=${catalogNumber} no TLE rows`);
   }
@@ -418,7 +656,8 @@ async function fetchTleByCatalogNumber(catalogNumber: number, timeoutMs = TLE_FE
 }
 
 async function fetchSatcatRecords(group: string) {
-  const rows = await fetchJson<CelestrakSatcatRecord[]>(`https://celestrak.org/satcat/records.php?GROUP=${encodeURIComponent(group)}&FORMAT=JSON`, SATCAT_FETCH_TIMEOUT_MS);
+  const { text, url } = await fetchCelestrakText(`/satcat/records.php?GROUP=${encodeURIComponent(group)}&FORMAT=JSON`, SATCAT_FETCH_TIMEOUT_MS);
+  const rows = parseJsonResponse<CelestrakSatcatRecord[]>(url, text);
   const records = new Map<number, CelestrakSatcatRecord>();
   for (const row of rows) {
     const catalogNumber = Number(row.NORAD_CAT_ID);
@@ -430,9 +669,7 @@ async function fetchSatcatRecords(group: string) {
 }
 
 async function fetchSatcatRecord(catalogNumber: number, timeoutMs = SATCAT_FETCH_TIMEOUT_MS) {
-  const url = `https://celestrak.org/satcat/records.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=JSON`;
-  const { response, text } = await fetchTextWithTimeout(url, timeoutMs);
-  if (!response.ok) throw new Error(`CelesTrak SATCAT CATNR=${catalogNumber} ${response.status}`);
+  const { text, url } = await fetchCelestrakText(`/satcat/records.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=JSON`, timeoutMs);
   if (!text.trim() || /No SATCAT records found/i.test(text)) {
     throw new CatalogLookupMissError(`CelesTrak SATCAT CATNR=${catalogNumber} empty`);
   }
@@ -514,26 +751,486 @@ function dedupeCatalog(entries: CatalogEntry[]) {
   return [...byCatalogNumber.values()];
 }
 
-async function getConjunctions(url: URL): Promise<ConjunctionRecord[]> {
+async function getConjunctions(url: URL, env: Env): Promise<ConjunctionRecord[]> {
   const limit = conjunctionLimitFromUrl(url);
-  const catalogNumbers = new Set(catalogNumbersFromUrl(url));
+  const catalogNumberValues = catalogNumbersFromUrl(url);
+  const catalogNumbers = new Set(catalogNumberValues);
   const order = socratesOrderFromUrl(url);
+
+  const snapshotRecords = await getSocratesSnapshotResults(env, order, limit, catalogNumbers).catch((error) => {
+    console.warn('SOCRATES snapshot read failed', error);
+    return null;
+  });
+  if (snapshotRecords) return snapshotRecords;
+
   try {
-    const { response, text } = await fetchTextWithTimeout(socratesCsvUrl(order), SOCRATES_FETCH_TIMEOUT_MS);
-    if (!response.ok) throw new Error(`SOCRATES ${order} ${response.status}`);
-    const lastModified = response.headers.get('last-modified');
-    const fetchedAt = lastModified ? new Date(lastModified).toISOString() : new Date().toISOString();
-    return parseSocratesCsv(text, {
-      catalogNumbers,
-      fetchedAt,
-      limit,
-    });
-  } catch (error) {
-    return createConjunctionFallback(error instanceof Error ? error.message : 'SOCRATES CSV unavailable');
+    return await getSocratesSearchResults(order, limit, catalogNumberValues);
+  } catch (searchError) {
+    try {
+      const { response, text } = await fetchSocratesCsv(order, limit, catalogNumbers.size > 0);
+      const lastModified = response.headers.get('last-modified');
+      const fetchedAt = lastModified ? new Date(lastModified).toISOString() : new Date().toISOString();
+      return parseSocratesCsv(trimPartialCsv(text, response), {
+        catalogNumbers,
+        fetchedAt,
+        limit,
+      });
+    } catch (csvError) {
+      const searchDetail = searchError instanceof Error ? searchError.message : 'SOCRATES search unavailable';
+      const csvDetail = csvError instanceof Error ? csvError.message : 'SOCRATES CSV unavailable';
+      return createConjunctionFallback(`${searchDetail}; ${csvDetail}`);
+    }
   }
 }
 
-function socratesCsvUrl(order: string) {
+async function getSocratesSnapshotResults(env: Env, order: string, limit: number, catalogNumbers: Set<number>) {
+  const bucket = env.SOCRATES_BUCKET;
+  if (!bucket || order !== SOCRATES_SNAPSHOT_ORDER) return null;
+
+  const manifest = await getSocratesSnapshotManifest(bucket, order);
+  if (!manifest) return null;
+
+  return readSocratesSnapshotRecords(bucket, manifest, {
+    catalogNumbers,
+    fetchedAt: manifest.sourceLastModified ?? manifest.completedAt,
+    limit,
+  });
+}
+
+async function getSocratesSnapshotManifest(bucket: R2BucketLike, order: string) {
+  const object = await bucket.get(socratesSnapshotManifestKey(order));
+  if (!object) return null;
+
+  const parsed = parseSocratesSnapshotManifest(await object.text());
+  if (!parsed || parsed.order !== order || !parsed.chunks.length) return null;
+  return parsed;
+}
+
+async function readSocratesSnapshotRecords(
+  bucket: R2BucketLike,
+  manifest: SocratesSnapshotManifest,
+  options: { catalogNumbers: Set<number>; fetchedAt: string; limit: number },
+) {
+  const records: ConjunctionRecord[] = [];
+  let lineBuffer = '';
+  let indexes: Record<string, number> | null = null;
+  const isStale = Date.now() - new Date(manifest.completedAt).getTime() > SOCRATES_SNAPSHOT_STALE_MS;
+  const note = isStale ? `SOCRATES snapshot is older than expected; Celtrak snapshot refreshed at ${manifest.completedAt}.` : undefined;
+
+  for (const chunk of [...manifest.chunks].sort((left, right) => left.start - right.start)) {
+    const object = await bucket.get(chunk.key);
+    if (!object) throw new Error(`SOCRATES snapshot chunk missing: ${chunk.key}`);
+
+    lineBuffer += await object.text();
+    const lines = lineBuffer.split(/\r?\n/);
+    lineBuffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      const record = parseSocratesCsvLineForSnapshot(line, indexes, {
+        catalogNumbers: options.catalogNumbers,
+        fetchedAt: options.fetchedAt,
+        stale: isStale,
+        note,
+      });
+      if (record === 'header') {
+        indexes = csvHeaderIndexes(line);
+        continue;
+      }
+      if (record) records.push(record);
+      if (records.length >= options.limit) return records;
+    }
+  }
+
+  if (lineBuffer.trim()) {
+    const record = parseSocratesCsvLineForSnapshot(lineBuffer, indexes, {
+      catalogNumbers: options.catalogNumbers,
+      fetchedAt: options.fetchedAt,
+      stale: isStale,
+      note,
+    });
+    if (record === 'header') {
+      indexes = csvHeaderIndexes(lineBuffer);
+    } else if (record) {
+      records.push(record);
+    }
+  }
+
+  if (!indexes) throw new Error('SOCRATES snapshot has no CSV header');
+  return records.slice(0, options.limit);
+}
+
+function parseSocratesCsvLineForSnapshot(
+  line: string,
+  indexes: Record<string, number> | null,
+  options: { catalogNumbers: Set<number>; fetchedAt: string; stale?: boolean; note?: string },
+) {
+  const normalizedLine = line.replace(/^\uFEFF/, '').trim();
+  if (!normalizedLine) return null;
+  if (!indexes) return 'header' as const;
+  return createSocratesCsvRecord(parseCsvLine(normalizedLine), indexes, options);
+}
+
+async function refreshSocratesSnapshot(env: Env, order: string) {
+  const bucket = env.SOCRATES_BUCKET;
+  if (!bucket || order !== SOCRATES_SNAPSHOT_ORDER) return false;
+
+  const previousManifest = await getSocratesSnapshotManifest(bucket, order).catch(() => null);
+  const snapshotId = new Date().toISOString().replace(/[^0-9A-Za-z]/g, '');
+  const prefix = socratesSnapshotPrefix(order, snapshotId);
+  const chunks: SocratesSnapshotChunk[] = [];
+  let nextStart = 0;
+  let totalBytes: number | undefined;
+  let sourceLastModified: string | undefined;
+  let sourceUrl = '';
+
+  for (let chunkIndex = 0; chunkIndex < SOCRATES_SNAPSHOT_MAX_CHUNKS; chunkIndex += 1) {
+    const end = nextStart + SOCRATES_SNAPSHOT_CHUNK_BYTES - 1;
+    const { response, arrayBuffer, url } = await fetchCelestrakBytes(socratesCsvPath(order), SOCRATES_SNAPSHOT_CHUNK_TIMEOUT_MS, {
+      range: `bytes=${nextStart}-${end}`,
+    });
+    if (!response.ok) throw new Error(`${url} ${response.status}`);
+
+    const range = parseContentRange(response.headers.get('content-range'));
+    const start = range?.start ?? nextStart;
+    const chunkEnd = range?.end ?? nextStart + arrayBuffer.byteLength - 1;
+    if (range && start !== nextStart) {
+      throw new Error(`SOCRATES range mismatch: expected ${nextStart}, received ${start}`);
+    }
+
+    sourceUrl = url;
+    totalBytes = range?.total ?? arrayBuffer.byteLength;
+    sourceLastModified = normalizeHttpDate(response.headers.get('last-modified')) ?? sourceLastModified;
+
+    const key = `${prefix}/part-${String(chunkIndex).padStart(4, '0')}.csv`;
+    await bucket.put(key, arrayBuffer, {
+      httpMetadata: { contentType: 'text/csv; charset=utf-8' },
+      customMetadata: {
+        order,
+        snapshotId,
+        start: String(start),
+        end: String(chunkEnd),
+      },
+    });
+    chunks.push({ key, start, end: chunkEnd, size: arrayBuffer.byteLength });
+
+    if (response.status !== 206 || chunkEnd + 1 >= totalBytes) break;
+    nextStart = chunkEnd + 1;
+  }
+
+  if (!chunks.length) throw new Error('SOCRATES snapshot produced no chunks');
+  const completedAt = new Date().toISOString();
+  const manifest: SocratesSnapshotManifest = {
+    version: 1,
+    order,
+    source: 'celestrak-socrates-csv',
+    sourceUrl,
+    sourceLastModified,
+    snapshotId,
+    completedAt,
+    totalBytes,
+    chunkSizeBytes: SOCRATES_SNAPSHOT_CHUNK_BYTES,
+    chunks,
+    previous: previousManifest ? socratesSnapshotRef(previousManifest) : undefined,
+  };
+
+  await bucket.put(socratesSnapshotManifestKey(order), JSON.stringify(manifest), {
+    httpMetadata: { contentType: 'application/json; charset=utf-8' },
+    customMetadata: {
+      order,
+      snapshotId,
+      completedAt,
+    },
+  });
+
+  if (previousManifest?.previous) {
+    await deleteSocratesSnapshot(bucket, previousManifest.previous).catch((error) => {
+      console.warn('SOCRATES old snapshot cleanup failed', error);
+    });
+  }
+
+  return true;
+}
+
+function socratesSnapshotManifestKey(order: string) {
+  return `socrates/${order}/latest.json`;
+}
+
+function socratesSnapshotPrefix(order: string, snapshotId: string) {
+  return `socrates/${order}/snapshots/${snapshotId}`;
+}
+
+function socratesSnapshotRef(manifest: SocratesSnapshotManifest): SocratesSnapshotRef {
+  return {
+    snapshotId: manifest.snapshotId,
+    completedAt: manifest.completedAt,
+    chunks: manifest.chunks,
+  };
+}
+
+async function deleteSocratesSnapshot(bucket: R2BucketLike, snapshot: SocratesSnapshotRef) {
+  const keys = snapshot.chunks.map((chunk) => chunk.key);
+  if (keys.length) await bucket.delete(keys);
+}
+
+function parseSocratesSnapshotManifest(text: string): SocratesSnapshotManifest | null {
+  try {
+    const value = JSON.parse(text) as Partial<SocratesSnapshotManifest>;
+    if (value.version !== 1 || !value.order || !value.snapshotId || !value.completedAt || !Array.isArray(value.chunks)) {
+      return null;
+    }
+    const chunks = value.chunks.filter(isSocratesSnapshotChunk).sort((left, right) => left.start - right.start);
+    if (!chunks.length) return null;
+    return {
+      version: 1,
+      order: value.order,
+      source: 'celestrak-socrates-csv',
+      sourceUrl: value.sourceUrl ?? '',
+      sourceLastModified: value.sourceLastModified,
+      snapshotId: value.snapshotId,
+      completedAt: value.completedAt,
+      totalBytes: value.totalBytes,
+      chunkSizeBytes: value.chunkSizeBytes ?? SOCRATES_SNAPSHOT_CHUNK_BYTES,
+      chunks,
+      previous: isSocratesSnapshotRef(value.previous) ? value.previous : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isSocratesSnapshotRef(value: unknown): value is SocratesSnapshotRef {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<SocratesSnapshotRef>;
+  return Boolean(record.snapshotId && record.completedAt && Array.isArray(record.chunks) && record.chunks.every(isSocratesSnapshotChunk));
+}
+
+function isSocratesSnapshotChunk(value: unknown): value is SocratesSnapshotChunk {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<SocratesSnapshotChunk>;
+  return (
+    typeof record.key === 'string' &&
+    Number.isFinite(record.start) &&
+    Number.isFinite(record.end) &&
+    Number.isFinite(record.size)
+  );
+}
+
+async function getSocratesSearchResults(order: string, limit: number, catalogNumbers: number[]) {
+  const max = catalogNumbers.length
+    ? Math.min(limit, MAX_SOCRATES_CATALOG_SEARCH_RESULTS)
+    : Math.min(limit, MAX_SOCRATES_SEARCH_RESULTS);
+  if (!catalogNumbers.length) {
+    const { text } = await fetchCelestrakText(socratesSearchPath(order, max));
+    return parseSocratesHtml(text, {
+      fetchedAt: socratesFetchedAtFromHtml(text) ?? new Date().toISOString(),
+      limit,
+      order,
+    });
+  }
+
+  const settled = await Promise.allSettled(
+    catalogNumbers.map(async (catalogNumber) => {
+      const { text } = await fetchCelestrakText(socratesSearchPath(order, max, catalogNumber));
+      return parseSocratesHtml(text, {
+        fetchedAt: socratesFetchedAtFromHtml(text) ?? new Date().toISOString(),
+        limit: max,
+        order,
+      });
+    }),
+  );
+  const records = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+  if (!records.length) {
+    const failures = settled
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => (result.reason instanceof Error ? result.reason.message : 'unknown'))
+      .join('; ');
+    throw new Error(`SOCRATES search unavailable${failures ? `: ${failures}` : ''}`);
+  }
+
+  return sortSocratesRecords(dedupeConjunctionRecords(records), order).slice(0, limit);
+}
+
+function socratesSearchPath(order: string, max: number, catalogNumber?: number) {
+  const params = new URLSearchParams();
+  if (catalogNumber) {
+    params.set('CATNR', `${catalogNumber},`);
+  } else {
+    params.set('NAME', ',');
+  }
+  params.set('ORDER', socratesQueryOrder(order));
+  params.set('MAX', String(max));
+  return `/SOCRATES/table-socrates.php?${params.toString()}`;
+}
+
+function socratesQueryOrder(order: string) {
+  if (order === 'maxProb') return 'MAXPROB';
+  if (order === 'tca') return 'TCA';
+  if (order === 'relSpeed') return 'RELSPEED';
+  if (order === 'ssc') return 'SSC';
+  return 'MINRANGE';
+}
+
+function socratesFetchedAtFromHtml(html: string) {
+  const match = /Data current as of\s+(\d{4})\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}:\d{2}:\d{2})\s+UTC/.exec(html);
+  if (!match) return undefined;
+  const [, year, month, day, time] = match;
+  const monthIndex = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(month);
+  if (monthIndex < 0) return undefined;
+  const [hour, minute, second] = time.split(':').map(Number);
+  const date = new Date(Date.UTC(Number(year), monthIndex, Number(day), hour, minute, second));
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+function parseSocratesHtml(html: string, options: { fetchedAt: string; limit: number; order: string }): ConjunctionRecord[] {
+  const rows = [...html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map((match) => match[1]);
+  const records: ConjunctionRecord[] = [];
+
+  for (let index = 0; index < rows.length - 1; index += 1) {
+    if (!rows[index].includes('openWindowData')) continue;
+
+    const primaryCells = htmlTableCells(rows[index]);
+    const secondaryCells = htmlTableCells(rows[index + 1]);
+    if (primaryCells.length < 7 || secondaryCells.length < 6) continue;
+
+    const primaryCatalog = numberFromCsv(primaryCells[1]);
+    const secondaryCatalog = numberFromCsv(secondaryCells[1]);
+    const tca = normalizeSocratesTimestamp(primaryCells[4]);
+    const missDistanceKm = numberFromCsv(primaryCells[5]);
+    const relVelocityKmS = numberFromCsv(primaryCells[6]);
+    if (!tca || missDistanceKm === undefined || relVelocityKmS === undefined) continue;
+
+    records.push({
+      id: `socrates-${primaryCatalog ?? 'unknown'}-${secondaryCatalog ?? 'unknown'}-${tca.replace(/\W/g, '')}`,
+      origin: 'OSINT',
+      tca,
+      primary: {
+        name: cleanSocratesObjectName(primaryCells[2]) ?? `NORAD ${primaryCatalog ?? 'unknown'}`,
+        catalogNumber: primaryCatalog,
+      },
+      secondary: {
+        name: cleanSocratesObjectName(secondaryCells[2]) ?? `NORAD ${secondaryCatalog ?? 'unknown'}`,
+        catalogNumber: secondaryCatalog,
+      },
+      missDistanceKm,
+      relVelocityKmS,
+      pc: numberFromCsv(secondaryCells[4]),
+      source: 'celestrak-socrates',
+      fetchedAt: options.fetchedAt,
+    });
+
+    if (records.length >= options.limit) break;
+  }
+
+  return sortSocratesRecords(dedupeConjunctionRecords(records), options.order).slice(0, options.limit);
+}
+
+function htmlTableCells(row: string) {
+  return [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => htmlText(match[1]));
+}
+
+function htmlText(value: string) {
+  return value
+    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function dedupeConjunctionRecords(records: ConjunctionRecord[]) {
+  const byId = new Map<string, ConjunctionRecord>();
+  for (const record of records) {
+    byId.set(record.id, record);
+  }
+  return [...byId.values()];
+}
+
+function sortSocratesRecords(records: ConjunctionRecord[], order: string) {
+  return [...records].sort((left, right) => {
+    if (order === 'maxProb') return (right.pc ?? -Infinity) - (left.pc ?? -Infinity) || left.tca.localeCompare(right.tca);
+    if (order === 'tca') return left.tca.localeCompare(right.tca);
+    if (order === 'relSpeed') return right.relVelocityKmS - left.relVelocityKmS || left.tca.localeCompare(right.tca);
+    if (order === 'ssc') {
+      return (
+        (left.primary.catalogNumber ?? Number.MAX_SAFE_INTEGER) - (right.primary.catalogNumber ?? Number.MAX_SAFE_INTEGER) ||
+        (left.secondary.catalogNumber ?? Number.MAX_SAFE_INTEGER) - (right.secondary.catalogNumber ?? Number.MAX_SAFE_INTEGER) ||
+        left.tca.localeCompare(right.tca)
+      );
+    }
+    return left.missDistanceKm - right.missDistanceKm || left.tca.localeCompare(right.tca);
+  });
+}
+
+async function fetchSocratesCsv(order: string, limit: number, hasCatalogFilter: boolean) {
+  if (hasCatalogFilter) {
+    return fetchSocratesCsvFullScan(order);
+  }
+  const rangeBytes = Math.max(SOCRATES_RANGE_BYTES, limit * 512);
+  return fetchCelestrakText(socratesCsvPath(order), SOCRATES_FETCH_TIMEOUT_MS, {
+    range: `bytes=0-${rangeBytes - 1}`,
+  });
+}
+
+async function fetchSocratesCsvFullScan(order: string) {
+  const chunks: string[] = [];
+  let nextStart = 0;
+  let responseForMetadata: Response | null = null;
+
+  for (let chunkIndex = 0; chunkIndex < 64; chunkIndex += 1) {
+    const end = nextStart + SOCRATES_FILTERED_RANGE_BYTES - 1;
+    const { response, text } = await fetchCelestrakText(socratesCsvPath(order), SOCRATES_FETCH_TIMEOUT_MS, {
+      range: `bytes=${nextStart}-${end}`,
+    });
+    const lastModified = response.headers.get('last-modified');
+    if (lastModified || !responseForMetadata) responseForMetadata = response;
+    chunks.push(trimPartialCsv(text, response));
+    if (response.status !== 206) break;
+
+    const range = parseContentRange(response.headers.get('content-range'));
+    if (!range) break;
+    if (range.end + 1 >= range.total) break;
+    nextStart = range.end + 1;
+  }
+
+  return {
+    response: responseForMetadata ?? new Response(),
+    text: mergeCsvChunks(chunks),
+  };
+}
+
+function parseContentRange(value: string | null) {
+  const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(value ?? '');
+  if (!match) return null;
+  return {
+    start: Number(match[1]),
+    end: Number(match[2]),
+    total: Number(match[3]),
+  };
+}
+
+function mergeCsvChunks(chunks: string[]) {
+  return chunks
+    .map((chunk, index) => {
+      if (index === 0) return chunk;
+      const firstNewline = chunk.indexOf('\n');
+      return firstNewline >= 0 ? chunk.slice(firstNewline + 1) : '';
+    })
+    .join('\n');
+}
+
+function trimPartialCsv(text: string, response: Response) {
+  if (response.status !== 206) return text;
+  const lastNewline = text.lastIndexOf('\n');
+  return lastNewline > 0 ? text.slice(0, lastNewline) : text;
+}
+
+function socratesCsvPath(order: string) {
   const file =
     order === 'maxProb'
       ? 'sort-maxProb.csv'
@@ -542,9 +1239,9 @@ function socratesCsvUrl(order: string) {
         : order === 'relSpeed'
           ? 'sort-relSpeed.csv'
           : order === 'ssc'
-            ? 'sort-ssc.csv'
-            : 'sort-minRange.csv';
-  return `https://celestrak.org/SOCRATES/${file}`;
+          ? 'sort-ssc.csv'
+          : 'sort-minRange.csv';
+  return `/SOCRATES/${file}`;
 }
 
 function parseSocratesCsv(
@@ -553,50 +1250,68 @@ function parseSocratesCsv(
 ): ConjunctionRecord[] {
   const lines = text.split(/\r?\n/).filter(Boolean);
   const [headerLine, ...rows] = lines;
-  const headers = parseCsvLine(headerLine ?? '');
-  const indexes = Object.fromEntries(headers.map((header, index) => [header, index]));
+  const indexes = csvHeaderIndexes(headerLine ?? '');
   const records: ConjunctionRecord[] = [];
 
   for (const row of rows) {
-    const cells = parseCsvLine(row);
-    const catalogNumber1 = numberFromCsv(cells[indexes.NORAD_CAT_ID_1]);
-    const catalogNumber2 = numberFromCsv(cells[indexes.NORAD_CAT_ID_2]);
-    if (
-      options.catalogNumbers.size &&
-      (!catalogNumber1 || !options.catalogNumbers.has(catalogNumber1)) &&
-      (!catalogNumber2 || !options.catalogNumbers.has(catalogNumber2))
-    ) {
-      continue;
-    }
-
-    const tca = normalizeSocratesTimestamp(cells[indexes.TCA]);
-    const missDistanceKm = numberFromCsv(cells[indexes.TCA_RANGE]);
-    const relVelocityKmS = numberFromCsv(cells[indexes.TCA_RELATIVE_SPEED]);
-    if (!tca || missDistanceKm === undefined || relVelocityKmS === undefined) continue;
-
-    records.push({
-      id: `socrates-${catalogNumber1 ?? 'unknown'}-${catalogNumber2 ?? 'unknown'}-${tca.replace(/\W/g, '')}`,
-      origin: 'OSINT',
-      tca,
-      primary: {
-        name: cleanSocratesObjectName(cells[indexes.OBJECT_NAME_1]) ?? `NORAD ${catalogNumber1 ?? 'unknown'}`,
-        catalogNumber: catalogNumber1,
-      },
-      secondary: {
-        name: cleanSocratesObjectName(cells[indexes.OBJECT_NAME_2]) ?? `NORAD ${catalogNumber2 ?? 'unknown'}`,
-        catalogNumber: catalogNumber2,
-      },
-      missDistanceKm,
-      relVelocityKmS,
-      pc: numberFromCsv(cells[indexes.MAX_PROB]),
-      source: 'celestrak-socrates',
+    const record = createSocratesCsvRecord(parseCsvLine(row), indexes, {
+      catalogNumbers: options.catalogNumbers,
       fetchedAt: options.fetchedAt,
     });
+    if (!record) continue;
+
+    records.push(record);
 
     if (records.length >= options.limit) break;
   }
 
   return records;
+}
+
+function csvHeaderIndexes(headerLine: string) {
+  return Object.fromEntries(parseCsvLine(headerLine).map((header, index) => [header.replace(/^\uFEFF/, ''), index]));
+}
+
+function createSocratesCsvRecord(
+  cells: string[],
+  indexes: Record<string, number>,
+  options: { catalogNumbers: Set<number>; fetchedAt: string; stale?: boolean; note?: string },
+): ConjunctionRecord | null {
+  const catalogNumber1 = numberFromCsv(cells[indexes.NORAD_CAT_ID_1]);
+  const catalogNumber2 = numberFromCsv(cells[indexes.NORAD_CAT_ID_2]);
+  if (
+    options.catalogNumbers.size &&
+    (!catalogNumber1 || !options.catalogNumbers.has(catalogNumber1)) &&
+    (!catalogNumber2 || !options.catalogNumbers.has(catalogNumber2))
+  ) {
+    return null;
+  }
+
+  const tca = normalizeSocratesTimestamp(cells[indexes.TCA]);
+  const missDistanceKm = numberFromCsv(cells[indexes.TCA_RANGE]);
+  const relVelocityKmS = numberFromCsv(cells[indexes.TCA_RELATIVE_SPEED]);
+  if (!tca || missDistanceKm === undefined || relVelocityKmS === undefined) return null;
+
+  return {
+    id: `socrates-${catalogNumber1 ?? 'unknown'}-${catalogNumber2 ?? 'unknown'}-${tca.replace(/\W/g, '')}`,
+    origin: options.stale ? 'STALE' : 'OSINT',
+    stale: options.stale || undefined,
+    tca,
+    primary: {
+      name: cleanSocratesObjectName(cells[indexes.OBJECT_NAME_1]) ?? `NORAD ${catalogNumber1 ?? 'unknown'}`,
+      catalogNumber: catalogNumber1,
+    },
+    secondary: {
+      name: cleanSocratesObjectName(cells[indexes.OBJECT_NAME_2]) ?? `NORAD ${catalogNumber2 ?? 'unknown'}`,
+      catalogNumber: catalogNumber2,
+    },
+    missDistanceKm,
+    relVelocityKmS,
+    pc: numberFromCsv(cells[indexes.MAX_PROB]),
+    source: 'celestrak-socrates',
+    fetchedAt: options.fetchedAt,
+    note: options.note,
+  };
 }
 
 function parseCsvLine(line: string) {
@@ -886,6 +1601,40 @@ async function fetchJson<T>(url: string, timeoutMs = 8000): Promise<T> {
   return parseJsonResponse<T>(url, text);
 }
 
+async function fetchCelestrakText(path: string, timeoutMs = 12_000, headers: Record<string, string> = {}) {
+  const errors: string[] = [];
+  for (const origin of CELESTRAK_ORIGINS) {
+    const url = `${origin}${path}`;
+    try {
+      const result = await fetchTextWithTimeout(url, timeoutMs, { ...CELESTRAK_REQUEST_HEADERS, ...headers });
+      if (result.response.ok) {
+        return { ...result, url };
+      }
+      errors.push(`${url} ${result.response.status}`);
+    } catch (error) {
+      errors.push(`${url}: ${error instanceof Error ? error.message : 'unknown'}`);
+    }
+  }
+  throw new Error(errors.join('; '));
+}
+
+async function fetchCelestrakBytes(path: string, timeoutMs = 12_000, headers: Record<string, string> = {}) {
+  const errors: string[] = [];
+  for (const origin of CELESTRAK_ORIGINS) {
+    const url = `${origin}${path}`;
+    try {
+      const result = await fetchArrayBufferWithTimeout(url, timeoutMs, { ...CELESTRAK_REQUEST_HEADERS, ...headers });
+      if (result.response.ok) {
+        return { ...result, url };
+      }
+      errors.push(`${url} ${result.response.status}`);
+    } catch (error) {
+      errors.push(`${url}: ${error instanceof Error ? error.message : 'unknown'}`);
+    }
+  }
+  throw new Error(errors.join('; '));
+}
+
 function parseJsonResponse<T>(url: string, text: string): T {
   try {
     return JSON.parse(text) as T;
@@ -895,11 +1644,11 @@ function parseJsonResponse<T>(url: string, text: string): T {
   }
 }
 
-async function fetchTextWithTimeout(url: string, timeoutMs: number) {
+async function fetchTextWithTimeout(url: string, timeoutMs: number, headers?: HeadersInit) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { headers, signal: controller.signal });
     const text = await response.text();
     return { response, text };
   } catch (error) {
@@ -912,8 +1661,25 @@ async function fetchTextWithTimeout(url: string, timeoutMs: number) {
   }
 }
 
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
+async function fetchArrayBufferWithTimeout(url: string, timeoutMs: number, headers?: HeadersInit) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { headers, signal: controller.signal });
+    const arrayBuffer = await response.arrayBuffer();
+    return { response, arrayBuffer };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`${url} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function json(data: unknown, status = 200, headers?: Record<string, string>) {
+  return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...headers } });
 }
 
 function withCacheControl(response: Response, value: string) {
@@ -937,6 +1703,12 @@ function cleanString(value: unknown) {
   if (value === undefined || value === null) return undefined;
   const text = String(value).trim();
   return text ? text : undefined;
+}
+
+function normalizeHttpDate(value: string | null) {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
 }
 
 function clampNumber(value: number, min: number, max: number, fallback: number) {

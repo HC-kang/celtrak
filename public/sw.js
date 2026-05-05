@@ -1,5 +1,5 @@
 const SHELL_CACHE = 'orbit-lab-shell-v1';
-const RUNTIME_CACHE = 'orbit-lab-runtime-v1';
+const RUNTIME_CACHE = 'orbit-lab-runtime-v2';
 const SHELL_ASSETS = ['/', '/offline.html'];
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
 
@@ -91,7 +91,9 @@ async function networkFirst(request) {
   const cache = await caches.open(RUNTIME_CACHE);
   try {
     const response = await fetch(request);
-    cache.put(request, response.clone());
+    if (response.ok && response.headers.get('x-celtrak-cacheable') !== 'false') {
+      cache.put(request, response.clone());
+    }
     return response;
   } catch {
     const cached = await cache.match(request);

@@ -2,7 +2,7 @@ import { fileURLToPath, URL } from 'node:url';
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 
-const apiProxyTarget = process.env.VITE_API_PROXY_TARGET ?? 'https://celestrak-orbit-lab-pro.weston0713.workers.dev';
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET ?? 'https://celtrak.blue-rabbit.kr';
 
 export default defineConfig({
   plugins: [vue()],
