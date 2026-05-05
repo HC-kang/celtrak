@@ -106,13 +106,20 @@ interface NoaaScaleSnapshot {
   };
 }
 
+interface KpTimelinePoint {
+  t: string;
+  kp: number;
+  observed?: 'observed' | 'estimated' | 'predicted';
+  noaaScale?: string | null;
+}
+
 const CELESTRAK_GROUPS = [
   { key: 'stations', label: 'Stations' },
   { key: 'weather', label: 'Weather' },
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v15';
+const API_CACHE_VERSION = 'v18';
 const CACHEABLE_HEADER = 'x-celtrak-cacheable';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
@@ -141,6 +148,7 @@ const SOCRATES_SNAPSHOT_STALE_MS = 4 * 60 * 60 * 1000;
 const CELESTRAK_ORIGINS = ['http://celestrak.org', 'https://celestrak.org'] as const;
 const SWPC_NOAA_SCALES_URL = 'https://services.swpc.noaa.gov/products/noaa-scales.json';
 const SWPC_PROTON_FLUX_URL = 'https://services.swpc.noaa.gov/json/goes/primary/integral-protons-3-day.json';
+const SWPC_XRAY_FLUX_URL = 'https://services.swpc.noaa.gov/json/goes/primary/xrays-3-day.json';
 const CELESTRAK_REQUEST_HEADERS = {
   accept: 'text/plain, text/csv, application/json, */*',
 };
@@ -1502,7 +1510,7 @@ function normalizeOpsStatus(value: unknown) {
 async function getSpaceWeatherSummary() {
   const fetchedAt = new Date().toISOString();
   const [xrayResult, kpResult, alertsResult, scalesResult, protonResult] = await Promise.allSettled([
-    fetchJson<unknown[]>('https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json'),
+    fetchJson<unknown[]>(SWPC_XRAY_FLUX_URL),
     fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json'),
     fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/alerts.json'),
     fetchJson<unknown>(SWPC_NOAA_SCALES_URL),
@@ -1567,6 +1575,7 @@ async function getSpaceWeatherSummary() {
     },
     kp: {
       current: kp.current,
+      series: kp.series,
       forecast: kp.forecast,
       storm: classifyKpStorm(kp.current),
     },
@@ -1580,28 +1589,34 @@ function normalizeXraySeries(rows: unknown[]) {
   return rows
     .filter((row): row is { time_tag: string; flux: number; energy?: string } => typeof row === 'object' && row !== null)
     .filter((row) => !row.energy || row.energy === '0.1-0.8nm')
-    .map((row) => ({ t: row.time_tag, flux: Number(row.flux) }))
+    .map((row) => ({ t: normalizeSwpcTimestamp(row.time_tag), flux: Number(row.flux) }))
     .filter((row) => row.t && Number.isFinite(row.flux))
-    .slice(-36);
+    .slice(-4_320);
 }
 
 function normalizeKp(raw: unknown[]) {
-  if (!Array.isArray(raw) || !raw.length) return { current: null, forecast: [] };
+  if (!Array.isArray(raw) || !raw.length) return { current: null, forecast: [], series: [] };
   const rows = normalizeKpRows(raw).sort((a, b) => a.t.localeCompare(b.t));
   const now = Date.now();
   const observed = rows.filter((row) => new Date(row.t).getTime() <= now).at(-1);
   const forecast = rows.filter((row) => new Date(row.t).getTime() >= now).slice(0, 12);
   return {
     current: observed?.kp ?? rows.at(-1)?.kp ?? null,
+    series: rows,
     forecast: forecast.length ? forecast : rows.slice(-12),
   };
 }
 
-function normalizeKpRows(raw: unknown[]) {
+function normalizeKpRows(raw: unknown[]): KpTimelinePoint[] {
   if (typeof raw[0] === 'object' && raw[0] !== null && !Array.isArray(raw[0])) {
     return raw
       .map((item) => item as Record<string, unknown>)
-      .map((row) => ({ t: String(row.time_tag ?? row.time ?? ''), kp: Number(row.kp) }))
+      .map((row) => ({
+        t: normalizeSwpcTimestamp(row.time_tag ?? row.time),
+        kp: Number(row.kp),
+        observed: normalizeKpObserved(row.observed),
+        noaaScale: cleanString(row.noaa_scale) ?? null,
+      }))
       .filter((row) => row.t && Number.isFinite(row.kp));
   }
 
@@ -1610,10 +1625,23 @@ function normalizeKpRows(raw: unknown[]) {
   if (!Array.isArray(header)) return [];
   const timeIndex = header.findIndex((item) => String(item).toLowerCase().includes('time'));
   const kpIndex = header.findIndex((item) => String(item).toLowerCase() === 'kp');
+  const observedIndex = header.findIndex((item) => String(item).toLowerCase() === 'observed');
+  const scaleIndex = header.findIndex((item) => String(item).toLowerCase().includes('noaa'));
   return rows
     .filter(Array.isArray)
-    .map((row) => ({ t: String(row[timeIndex >= 0 ? timeIndex : 0]), kp: Number(row[kpIndex >= 0 ? kpIndex : 1]) }))
+    .map((row) => ({
+      t: normalizeSwpcTimestamp(row[timeIndex >= 0 ? timeIndex : 0]),
+      kp: Number(row[kpIndex >= 0 ? kpIndex : 1]),
+      observed: observedIndex >= 0 ? normalizeKpObserved(row[observedIndex]) : undefined,
+      noaaScale: scaleIndex >= 0 ? (cleanString(row[scaleIndex]) ?? null) : null,
+    }))
     .filter((row) => row.t && Number.isFinite(row.kp));
+}
+
+function normalizeKpObserved(value: unknown): KpTimelinePoint['observed'] {
+  const observed = cleanString(value)?.toLowerCase();
+  if (observed === 'observed' || observed === 'estimated' || observed === 'predicted') return observed;
+  return undefined;
 }
 
 function normalizeProtonFlux(raw: unknown[]) {
@@ -1621,7 +1649,7 @@ function normalizeProtonFlux(raw: unknown[]) {
     .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
     .filter((row) => cleanString(row.energy) === '>=10 MeV')
     .map((row) => ({
-      t: cleanString(row.time_tag),
+      t: normalizeSwpcTimestamp(row.time_tag),
       flux: numberFromUnknown(row.flux),
     }))
     .filter((row): row is { t: string; flux: number } => Boolean(row.t) && Number.isFinite(row.flux))
@@ -1632,6 +1660,7 @@ function normalizeProtonFlux(raw: unknown[]) {
     currentPfu: latest?.flux ?? null,
     energy: '>=10 MeV',
     observedAt: latest?.t,
+    series: rows,
   };
 }
 
@@ -1705,6 +1734,15 @@ function swpcDateTime(dateValue: unknown, timeValue: unknown) {
   const time = cleanString(timeValue) ?? '00:00:00';
   const parsed = new Date(`${date}T${time.replace(/\s+/g, '')}Z`);
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : undefined;
+}
+
+function normalizeSwpcTimestamp(value: unknown) {
+  const raw = cleanString(value);
+  if (!raw) return '';
+  const compact = raw.trim().replace(' ', 'T');
+  const withZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(compact) ? compact : `${compact}Z`;
+  const parsed = new Date(withZone);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : '';
 }
 
 function deriveNoaaScales(options: { fetchedAt: string; xrayFlux: number | null; protonPfu: number | null; kp: number | null }): NoaaScaleSnapshot {
@@ -1906,8 +1944,8 @@ function createSpaceWeatherFallback() {
     stale: true,
     fetchedAt,
     xray: { currentWm2: null, series: [] },
-    kp: { current: null, forecast: [], storm: 'QUIET' },
-    proton: { currentPfu: null, energy: '>=10 MeV' },
+    kp: { current: null, series: [], forecast: [], storm: 'QUIET' },
+    proton: { currentPfu: null, energy: '>=10 MeV', series: [] },
     scales: deriveNoaaScales({ fetchedAt, xrayFlux: null, protonPfu: null, kp: null }),
     notices: [{ issuedAt: fetchedAt, type: 'FALLBACK', text: 'SWPC upstream unavailable; showing stale-safe fallback.' }],
   };
