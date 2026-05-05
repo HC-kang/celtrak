@@ -90,4 +90,20 @@ describe('space weather chart transforms', () => {
     expect(readout?.t).toBe('2026-05-05T15:00:00.000Z');
     expect(readout?.rows.map((row) => row.name)).toEqual(['Kp index', 'G scale']);
   });
+
+  it('keeps the current readout anchored to observed data before forecast points', () => {
+    const weather: SpaceWeatherSnapshot = {
+      ...baseWeather,
+      kp: {
+        ...baseWeather.kp,
+        series: [
+          ...baseWeather.kp.series,
+          { t: '2026-05-05T18:00:00Z', kp: 8, observed: 'predicted', noaaScale: null },
+        ],
+      },
+    };
+    const model = buildWeatherChartModel(weather, 'geomagnetic', new Date('2026-05-05T16:50:00Z').getTime());
+    expect(model.currentReadout?.t).toBe('2026-05-05T15:00:00.000Z');
+    expect(model.currentReadout?.rows[0]?.value).toBe('Kp 6');
+  });
 });

@@ -335,7 +335,33 @@ function createModel(input: Omit<WeatherChartModel, 'extent' | 'currentReadout'>
   const timestamps = input.series.flatMap((series) => series.points.map((point) => new Date(point.t).getTime())).filter(Number.isFinite);
   const extent = timestamps.length ? { start: Math.min(...timestamps), end: Math.max(...timestamps) } : null;
   const model = { ...input, extent, currentReadout: null };
-  return { ...model, currentReadout: readoutForTime(model, nowMs) };
+  return { ...model, currentReadout: readoutForCurrent(model, nowMs) };
+}
+
+function readoutForCurrent(model: Omit<WeatherChartModel, 'currentReadout'>, targetTimeMs: number): WeatherSelectedReadout | null {
+  const rows = model.series
+    .map((series) => {
+      const point = latestPoint(series.points, targetTimeMs);
+      return point
+        ? {
+            name: series.name,
+            value: point.label,
+            detail: point.detail,
+            sourceLabel: point.sourceLabel,
+            t: point.t,
+          }
+        : null;
+    })
+    .filter((row): row is NonNullable<typeof row> => Boolean(row));
+  if (!rows.length) return null;
+  const anchor = rows.reduce((best, row) => {
+    const time = new Date(row.t).getTime();
+    return Number.isFinite(time) && time > best.time ? { t: row.t, time } : best;
+  }, { t: rows[0].t, time: Number.NEGATIVE_INFINITY });
+  return {
+    t: anchor.t,
+    rows: rows.map(({ t: _t, ...row }) => row),
+  };
 }
 
 function readoutForTime(model: Omit<WeatherChartModel, 'currentReadout'>, targetTimeMs: number): WeatherSelectedReadout | null {

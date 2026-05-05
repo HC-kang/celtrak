@@ -119,7 +119,7 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v17';
+const API_CACHE_VERSION = 'v18';
 const CACHEABLE_HEADER = 'x-celtrak-cacheable';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
@@ -148,6 +148,7 @@ const SOCRATES_SNAPSHOT_STALE_MS = 4 * 60 * 60 * 1000;
 const CELESTRAK_ORIGINS = ['http://celestrak.org', 'https://celestrak.org'] as const;
 const SWPC_NOAA_SCALES_URL = 'https://services.swpc.noaa.gov/products/noaa-scales.json';
 const SWPC_PROTON_FLUX_URL = 'https://services.swpc.noaa.gov/json/goes/primary/integral-protons-3-day.json';
+const SWPC_XRAY_FLUX_URL = 'https://services.swpc.noaa.gov/json/goes/primary/xrays-3-day.json';
 const CELESTRAK_REQUEST_HEADERS = {
   accept: 'text/plain, text/csv, application/json, */*',
 };
@@ -1509,7 +1510,7 @@ function normalizeOpsStatus(value: unknown) {
 async function getSpaceWeatherSummary() {
   const fetchedAt = new Date().toISOString();
   const [xrayResult, kpResult, alertsResult, scalesResult, protonResult] = await Promise.allSettled([
-    fetchJson<unknown[]>('https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json'),
+    fetchJson<unknown[]>(SWPC_XRAY_FLUX_URL),
     fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json'),
     fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/alerts.json'),
     fetchJson<unknown>(SWPC_NOAA_SCALES_URL),
@@ -1590,7 +1591,7 @@ function normalizeXraySeries(rows: unknown[]) {
     .filter((row) => !row.energy || row.energy === '0.1-0.8nm')
     .map((row) => ({ t: normalizeSwpcTimestamp(row.time_tag), flux: Number(row.flux) }))
     .filter((row) => row.t && Number.isFinite(row.flux))
-    .slice(-360);
+    .slice(-4_320);
 }
 
 function normalizeKp(raw: unknown[]) {

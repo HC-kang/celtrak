@@ -32,7 +32,7 @@ const store = useAppStore();
 const chartEl = ref<HTMLElement | null>(null);
 const chart = shallowRef<ECharts | null>(null);
 const selectedMode = ref<WeatherChartMode>('geomagnetic');
-const selectedRange = ref<'6h' | '24h' | '3d' | 'all'>('all');
+const selectedRange = ref<'6h' | '24h' | '3d' | 'all'>('24h');
 const selectedReadout = ref<WeatherSelectedReadout | null>(null);
 
 let resizeObserver: ResizeObserver | null = null;
@@ -64,6 +64,7 @@ onMounted(async () => {
   chart.value = init(chartEl.value, undefined, { renderer: 'canvas' });
   attachChartHandlers();
   renderChart();
+  applyRange(selectedRange.value);
   resizeObserver = new ResizeObserver(() => chart.value?.resize());
   resizeObserver.observe(chartEl.value);
 });
@@ -77,7 +78,6 @@ onBeforeUnmount(() => {
 
 function selectMetric(mode: WeatherChartMode) {
   selectedMode.value = mode;
-  selectedRange.value = 'all';
 }
 
 function selectRange(key: '6h' | '24h' | '3d' | 'all') {
@@ -116,7 +116,9 @@ function applyRange(key: '6h' | '24h' | '3d' | 'all') {
   const extent = chartModel.value.extent;
   if (!instance || !extent) return;
   const preset = WEATHER_RANGE_PRESETS.find((item) => item.key === key);
-  const end = extent.end;
+  const now = Date.now();
+  const anchor = key === 'all' ? extent.end : Math.min(Math.max(now, extent.start), extent.end);
+  const end = key === 'all' ? extent.end : anchor;
   const start = preset?.durationMs ? Math.max(extent.start, end - preset.durationMs) : extent.start;
   instance.dispatchAction({
     type: 'dataZoom',
