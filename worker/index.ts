@@ -71,7 +71,7 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v11';
+const API_CACHE_VERSION = 'v12';
 const CACHEABLE_HEADER = 'x-celtrak-cacheable';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
@@ -84,6 +84,7 @@ const DEFAULT_API_CACHE_TTL_SECONDS = 900;
 // CelesTrak GP/SATCAT does not provide usable expiry headers and asks clients not to refetch more than once per 2 hours.
 const DEFAULT_CATALOG_CACHE_TTL_SECONDS = 9_000;
 const CATALOG_ORIGIN_REFRESH_SECONDS = 7_200;
+const CATALOG_SNAPSHOT_SCOPE = 'public-index';
 const TLE_FETCH_TIMEOUT_MS = 20_000;
 const SATCAT_FETCH_TIMEOUT_MS = 20_000;
 const CATNR_TLE_FETCH_TIMEOUT_MS = 6_000;
@@ -123,6 +124,17 @@ interface SocratesSnapshotManifest extends SocratesSnapshotRef {
   totalBytes?: number;
   chunkSizeBytes: number;
   previous?: SocratesSnapshotRef;
+}
+
+interface CatalogSnapshotManifest {
+  version: 1;
+  scope: string;
+  source: 'celestrak-gp-catalog';
+  snapshotId: string;
+  completedAt: string;
+  dataKey: string;
+  count: number;
+  previous?: { snapshotId: string; dataKey: string; completedAt: string };
 }
 
 class CatalogLookupMissError extends Error {
@@ -167,9 +179,8 @@ export default {
 
     return env.ASSETS.fetch(request);
   },
-  async scheduled(_controller: unknown, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(prewarmCatalogCache(env));
-    ctx.waitUntil(prewarmSocratesSnapshotAndCache(env));
+  async scheduled(_controller: unknown, env: Env, _ctx: ExecutionContext) {
+    await prewarmScheduledData(env);
   },
 };
 
@@ -212,7 +223,7 @@ async function buildApiResponse(url: URL, env: Env) {
     return json({ ok: true, service: 'celestrak-orbit-lab-pro', timestamp: new Date().toISOString() });
   }
   if (url.pathname === '/api/celestrak/catalog' || url.pathname === '/api/celestrak/gp') {
-    return json(await getCatalog(url));
+    return json(await getCatalog(url, env));
   }
   if (url.pathname === '/api/swpc/summary') {
     return json(await getSpaceWeatherSummary());
@@ -228,6 +239,11 @@ async function buildApiResponse(url: URL, env: Env) {
     return json(createGroundStations());
   }
   return json({ error: 'Not found' }, 404);
+}
+
+async function prewarmScheduledData(env: Env) {
+  await prewarmCatalogCache(env);
+  await prewarmSocratesSnapshotAndCache(env);
 }
 
 async function prewarmCatalogCache(env: Env) {
@@ -379,14 +395,31 @@ function socratesOrderFromUrl(url: URL) {
   return 'minRange';
 }
 
-async function getCatalog(url: URL): Promise<CatalogEntry[]> {
+async function getCatalog(url: URL, env: Env): Promise<CatalogEntry[]> {
   const catalogNumbers = catalogNumbersFromUrl(url);
   if (catalogNumbers.length) {
-    return getCatalogByCatalogNumbers(catalogNumbers.slice(0, MAX_CATALOG_NUMBER_LOOKUP));
+    return getCatalogByCatalogNumbers(catalogNumbers.slice(0, MAX_CATALOG_NUMBER_LOOKUP), env);
   }
 
   const requestedGroup = catalogGroupFromUrl(url);
   const limit = catalogLimitFromUrl(url);
+  const requestedKnownGroup = requestedGroup
+    ? CELESTRAK_GROUPS.find((group) => group.key === requestedGroup || group.label.toLowerCase() === requestedGroup)
+    : null;
+  if (requestedKnownGroup || !requestedGroup) {
+    const snapshot = await getCatalogSnapshotEntries(env).catch((error) => {
+      console.warn('Catalog snapshot read failed', error);
+      return null;
+    });
+    if (snapshot) {
+      const entries = requestedKnownGroup
+        ? snapshot.filter((entry) => entry.group.toLowerCase() === requestedKnownGroup.label.toLowerCase())
+        : dedupeCatalog(snapshot);
+      return entries.slice(0, limit);
+    }
+    throw new Error('CelesTrak catalog snapshot unavailable; waiting for scheduled ingest');
+  }
+
   const groups = requestedGroup ? CELESTRAK_GROUPS.filter((group) => group.key === requestedGroup || group.label.toLowerCase() === requestedGroup) : CELESTRAK_GROUPS;
   const selectedGroups = groups.length ? groups : CELESTRAK_GROUPS;
   const fetchedAt = new Date().toISOString();
@@ -406,23 +439,151 @@ async function getCatalog(url: URL): Promise<CatalogEntry[]> {
   return dedupeCatalog(entries).slice(0, limit);
 }
 
-async function getCatalogByCatalogNumbers(catalogNumbers: number[]): Promise<CatalogEntry[]> {
-  const fetchedAt = new Date().toISOString();
-  const lookupResults = await Promise.allSettled(
-    catalogNumbers.map((catalogNumber) => lookupCatalogNumber(catalogNumber, fetchedAt)),
-  );
+async function getCatalogByCatalogNumbers(catalogNumbers: number[], env: Env): Promise<CatalogEntry[]> {
+  const wanted = new Set(catalogNumbers);
+  const snapshot = await getCatalogSnapshotEntries(env).catch((error) => {
+    console.warn('Catalog snapshot read failed', error);
+    return null;
+  });
+  if (snapshot) return filterCatalogEntriesByCatalogNumbers(snapshot, wanted);
 
-  const entries = lookupResults.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
-  const hasCompletedLookup = lookupResults.some((result) => result.status === 'fulfilled');
-  if (!entries.length) {
-    if (hasCompletedLookup) return [];
-    const failures = lookupResults
-      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      .map((result) => (result.reason instanceof Error ? result.reason.message : 'unknown'))
-      .join('; ');
-    throw new Error(`CelesTrak catalog lookup unavailable${failures ? `: ${failures}` : ''}`);
+  throw new Error('CelesTrak catalog snapshot unavailable; waiting for scheduled ingest');
+}
+
+function filterCatalogEntriesByCatalogNumbers(entries: CatalogEntry[], catalogNumbers: Set<number>) {
+  return dedupeCatalog(entries.filter((entry) => catalogNumbers.has(entry.satcat.catalogNumber)));
+}
+
+async function refreshCatalogSnapshot(env: Env) {
+  const bucket = env.SOCRATES_BUCKET;
+  if (!bucket) return false;
+
+  const previousManifest = await getCatalogSnapshotManifest(bucket).catch(() => null);
+  const entries = await getSnapshotCatalogEntriesFromCelesTrak();
+  if (!entries.length) throw new Error('CelesTrak catalog snapshot produced no entries');
+
+  const snapshotId = new Date().toISOString().replace(/[^0-9A-Za-z]/g, '');
+  const completedAt = new Date().toISOString();
+  const dataKey = `catalog/${CATALOG_SNAPSHOT_SCOPE}/snapshots/${snapshotId}.json`;
+  await bucket.put(dataKey, JSON.stringify(entries), {
+    httpMetadata: { contentType: 'application/json; charset=utf-8' },
+    customMetadata: {
+      scope: CATALOG_SNAPSHOT_SCOPE,
+      snapshotId,
+      completedAt,
+    },
+  });
+
+  const manifest: CatalogSnapshotManifest = {
+    version: 1,
+    scope: CATALOG_SNAPSHOT_SCOPE,
+    source: 'celestrak-gp-catalog',
+    snapshotId,
+    completedAt,
+    dataKey,
+    count: entries.length,
+    previous: previousManifest
+      ? {
+          snapshotId: previousManifest.snapshotId,
+          dataKey: previousManifest.dataKey,
+          completedAt: previousManifest.completedAt,
+        }
+      : undefined,
+  };
+  await bucket.put(catalogSnapshotManifestKey(), JSON.stringify(manifest), {
+    httpMetadata: { contentType: 'application/json; charset=utf-8' },
+    customMetadata: {
+      scope: CATALOG_SNAPSHOT_SCOPE,
+      snapshotId,
+      completedAt,
+    },
+  });
+
+  if (previousManifest?.previous?.dataKey) {
+    await bucket.delete(previousManifest.previous.dataKey).catch((error) => {
+      console.warn('Catalog old snapshot cleanup failed', error);
+    });
   }
-  return dedupeCatalog(entries);
+
+  return true;
+}
+
+async function getCatalogSnapshotEntries(env: Env) {
+  const bucket = env.SOCRATES_BUCKET;
+  if (!bucket) return null;
+
+  const manifest = await getCatalogSnapshotManifest(bucket);
+  if (!manifest) return null;
+
+  const object = await bucket.get(manifest.dataKey);
+  if (!object) throw new Error(`Catalog snapshot data missing: ${manifest.dataKey}`);
+  const entries = parseJsonResponse<CatalogEntry[]>(manifest.dataKey, await object.text());
+  return Array.isArray(entries) ? entries : null;
+}
+
+async function getCatalogSnapshotManifest(bucket: R2BucketLike) {
+  const object = await bucket.get(catalogSnapshotManifestKey());
+  if (!object) return null;
+  const parsed = parseCatalogSnapshotManifest(await object.text());
+  if (!parsed || parsed.scope !== CATALOG_SNAPSHOT_SCOPE) return null;
+  return parsed;
+}
+
+function parseCatalogSnapshotManifest(text: string): CatalogSnapshotManifest | null {
+  try {
+    const value = JSON.parse(text) as Partial<CatalogSnapshotManifest>;
+    if (
+      value.version !== 1 ||
+      value.scope !== CATALOG_SNAPSHOT_SCOPE ||
+      value.source !== 'celestrak-gp-catalog' ||
+      !value.snapshotId ||
+      !value.completedAt ||
+      !value.dataKey ||
+      !Number.isFinite(value.count)
+    ) {
+      return null;
+    }
+    return {
+      version: 1,
+      scope: value.scope,
+      source: 'celestrak-gp-catalog',
+      snapshotId: value.snapshotId,
+      completedAt: value.completedAt,
+      dataKey: value.dataKey,
+      count: value.count,
+      previous: isCatalogSnapshotRef(value.previous) ? value.previous : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isCatalogSnapshotRef(value: unknown): value is { snapshotId: string; dataKey: string; completedAt: string } {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<{ snapshotId: string; dataKey: string; completedAt: string }>;
+  return Boolean(record.snapshotId && record.dataKey && record.completedAt);
+}
+
+function catalogSnapshotManifestKey() {
+  return `catalog/${CATALOG_SNAPSHOT_SCOPE}/latest.json`;
+}
+
+async function getSnapshotCatalogEntriesFromCelesTrak() {
+  const fetchedAt = new Date().toISOString();
+  const satcatByCatalog = new Map<number, CelestrakSatcatRecord>();
+  const settled = await Promise.allSettled(
+    CELESTRAK_GROUPS.map((group) =>
+      fetchTleGroup(group.key).then((tle) => parseTleCatalog(tle, group.label, fetchedAt, satcatByCatalog)),
+    ),
+  );
+  const tleEntries = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+  for (const result of settled) {
+    if (result.status === 'rejected') {
+      console.warn('CelesTrak GP snapshot fetch failed', result.reason);
+    }
+  }
+
+  return tleEntries;
 }
 
 async function lookupCatalogNumber(catalogNumber: number, fetchedAt: string): Promise<CatalogEntry[]> {
@@ -457,13 +618,13 @@ function settlePromise<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>>
   );
 }
 
-function catalogEntryFromSatcat(record: CelestrakSatcatRecord, fetchedAt: string): CatalogEntry | null {
+function catalogEntryFromSatcat(record: CelestrakSatcatRecord, fetchedAt: string, group = 'SATCAT'): CatalogEntry | null {
   const catalogNumber = Number(record.NORAD_CAT_ID);
   if (!Number.isFinite(catalogNumber)) return null;
   return {
     origin: 'OSINT',
     fetchedAt,
-    group: 'SATCAT',
+    group,
     satcat: {
       catalogNumber,
       objectId: cleanString(record.OBJECT_ID) ?? '',
