@@ -71,7 +71,7 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v12';
+const API_CACHE_VERSION = 'v13';
 const CACHEABLE_HEADER = 'x-celtrak-cacheable';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
@@ -226,7 +226,12 @@ async function buildApiResponse(url: URL, env: Env) {
     return json(await getCatalog(url, env));
   }
   if (url.pathname === '/api/swpc/summary') {
-    return json(await getSpaceWeatherSummary());
+    const summary = await getSpaceWeatherSummary();
+    return json(
+      summary,
+      200,
+      hasSyntheticSpaceWeatherFallback(summary) ? { [CACHEABLE_HEADER]: 'false', 'cache-control': 'no-store' } : undefined,
+    );
   }
   if (url.pathname === '/api/celestrak/socrates') {
     const records = await getConjunctions(url, env);
@@ -244,6 +249,7 @@ async function buildApiResponse(url: URL, env: Env) {
 async function prewarmScheduledData(env: Env) {
   await prewarmCatalogCache(env);
   await prewarmSocratesSnapshotAndCache(env);
+  await prewarmSpaceWeatherCache(env);
 }
 
 async function prewarmCatalogCache(env: Env) {
@@ -268,6 +274,13 @@ async function prewarmSocratesSnapshotAndCache(env: Env) {
   await refreshApiCache(url, cacheKey, cachePolicy, env);
 }
 
+async function prewarmSpaceWeatherCache(env: Env) {
+  const url = new URL('https://celtrak-cache.internal/api/swpc/summary');
+  const cacheKey = createApiCacheKey(url);
+  const cachePolicy = cachePolicyFor(url, env);
+  await refreshApiCache(url, cacheKey, cachePolicy, env);
+}
+
 async function refreshApiCache(url: URL, cacheKey: Request, cachePolicy: ApiCachePolicy, env: Env) {
   try {
     const response = await buildApiResponse(url, env);
@@ -285,6 +298,16 @@ function isCacheableApiResponse(response: Response) {
 
 function hasSyntheticConjunctionFallback(records: ConjunctionRecord[]) {
   return records.some((item) => item.id.startsWith('fallback-'));
+}
+
+function hasSyntheticSpaceWeatherFallback(summary: unknown) {
+  if (!summary || typeof summary !== 'object') return false;
+  const record = summary as { origin?: unknown; stale?: unknown; notices?: unknown };
+  if (record.origin !== 'STALE' || record.stale !== true || !Array.isArray(record.notices)) return false;
+  return record.notices.some((notice) => {
+    if (!notice || typeof notice !== 'object') return false;
+    return (notice as { type?: unknown }).type === 'FALLBACK';
+  });
 }
 
 async function putApiCache(cacheKey: Request, response: Response, cachePolicy: ApiCachePolicy) {
@@ -1381,33 +1404,55 @@ function normalizeOpsStatus(value: unknown) {
 
 async function getSpaceWeatherSummary() {
   const fetchedAt = new Date().toISOString();
-  try {
-    const [xrayRows, kpRows, alerts] = await Promise.all([
-      fetchJson<unknown[]>('https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json'),
-      fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json'),
-      fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/alerts.json').catch(() => []),
-    ]);
-    const xraySeries = normalizeXraySeries(xrayRows);
-    const latestFlux = xraySeries.at(-1)?.flux ?? null;
-    const kp = normalizeKp(kpRows);
-    return {
-      origin: 'OSINT',
-      fetchedAt,
-      xray: {
-        currentWm2: latestFlux,
-        ...classifyXray(latestFlux),
-        series: xraySeries,
-      },
-      kp: {
-        current: kp.current,
-        forecast: kp.forecast,
-        storm: classifyKpStorm(kp.current),
-      },
-      notices: normalizeAlerts(alerts),
-    };
-  } catch {
-    return createSpaceWeatherFallback();
+  const [xrayResult, kpResult, alertsResult] = await Promise.allSettled([
+    fetchJson<unknown[]>('https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json'),
+    fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json'),
+    fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/alerts.json'),
+  ]);
+
+  const xrayRows = xrayResult.status === 'fulfilled' && Array.isArray(xrayResult.value) ? xrayResult.value : [];
+  const kpRows = kpResult.status === 'fulfilled' && Array.isArray(kpResult.value) ? kpResult.value : [];
+  const xraySeries = normalizeXraySeries(xrayRows);
+  const latestFlux = xraySeries.at(-1)?.flux ?? null;
+  const kp = normalizeKp(kpRows);
+  const xrayMissing = !xraySeries.length;
+  const kpMissing = kp.current === null && !kp.forecast.length;
+
+  if (xrayMissing && kpMissing) return createSpaceWeatherFallback();
+
+  const notices = alertsResult.status === 'fulfilled' ? normalizeAlerts(alertsResult.value) : [];
+  const sourceNotices: Array<{ issuedAt: string; type: string; text: string }> = [];
+  if (xrayMissing) {
+    sourceNotices.push({
+      issuedAt: fetchedAt,
+      type: 'SOURCE_PARTIAL',
+      text: 'SWPC GOES X-ray feed unavailable; showing remaining public space weather data.',
+    });
   }
+  if (kpMissing) {
+    sourceNotices.push({
+      issuedAt: fetchedAt,
+      type: 'SOURCE_PARTIAL',
+      text: 'SWPC Kp feed unavailable; showing remaining public space weather data.',
+    });
+  }
+
+  return {
+    origin: 'OSINT',
+    stale: sourceNotices.length ? true : undefined,
+    fetchedAt,
+    xray: {
+      currentWm2: latestFlux,
+      ...classifyXray(latestFlux),
+      series: xraySeries,
+    },
+    kp: {
+      current: kp.current,
+      forecast: kp.forecast,
+      storm: classifyKpStorm(kp.current),
+    },
+    notices: [...sourceNotices, ...notices].slice(0, 5),
+  };
 }
 
 function normalizeXraySeries(rows: unknown[]) {

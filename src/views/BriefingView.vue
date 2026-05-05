@@ -360,9 +360,11 @@ const trustOverview = computed(() => [
   {
     label: 'Space Weather',
     sourceDetail: 'NOAA SWPC',
-    trustTier: store.offline ? 'Stale public source' : 'Public source',
-    tone: (store.weather?.kp.current ?? 0) >= 4 ? 'warn' : 'good',
-    detail: store.weather?.fetchedAt ? `Updated ${formatTimestamp(store.weather.fetchedAt)}` : 'Awaiting SWPC summary',
+    trustTier: store.weather?.stale || store.offline ? 'Stale public source' : 'Public source',
+    tone: store.weather?.stale || (store.weather?.kp.current ?? 0) >= 4 ? 'warn' : 'good',
+    detail: store.weather?.fetchedAt
+      ? `${store.weather?.stale ? 'Stale/partial · ' : 'Updated '}${formatTimestamp(store.weather.fetchedAt)}`
+      : 'Awaiting SWPC summary',
   },
   {
     label: 'User Layer',

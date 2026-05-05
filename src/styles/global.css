@@ -2025,20 +2025,22 @@ button.focus-inspector__chip:disabled {
 
 .tracking-scope__object-list {
   max-height: clamp(320px, 34vw, 440px);
+  grid-auto-rows: max-content;
   overflow: auto;
   padding-right: 2px;
   padding-bottom: 2px;
 }
 
 .tracking-scope__object {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   min-height: 124px;
   padding: 12px;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.055);
   border: 1px solid rgba(255, 255, 255, 0.09);
-  overflow: visible;
+  overflow: hidden;
 }
 
 .tracking-scope__object--muted {
@@ -2115,6 +2117,7 @@ button.focus-inspector__chip:disabled {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  max-width: 100%;
   padding-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
@@ -2122,8 +2125,10 @@ button.focus-inspector__chip:disabled {
 .tracking-scope__object-actions small {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   min-height: 28px;
   padding: 0 8px;
+  overflow: hidden;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.07);
   border: 1px solid rgba(255, 255, 255, 0.09);
@@ -2132,6 +2137,8 @@ button.focus-inspector__chip:disabled {
   font-weight: 800;
   letter-spacing: 0;
   line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tracking-scope__object-actions .button.panel-card__action-link {

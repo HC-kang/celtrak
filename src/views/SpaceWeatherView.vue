@@ -28,7 +28,7 @@ const xrayPoints = computed(() => {
   <div class="page-stack">
     <PanelCard title="Solar X-ray" subtitle="F-MUST-09">
       <template #actions>
-        <OriginBadge origin="OSINT" :timestamp="store.weather?.fetchedAt" />
+        <OriginBadge :origin="store.weather?.origin ?? 'OSINT'" :timestamp="store.weather?.fetchedAt" />
       </template>
       <div class="metric-grid">
         <MetricCard label="Flare Class" :value="`${store.weather?.xray.flareClass ?? '—'}${store.weather?.xray.classMagnitude ?? ''}`" />
