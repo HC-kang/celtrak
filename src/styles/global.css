@@ -17,6 +17,8 @@
   --body-gray: #6b6b6b;
   --warn: #f5c84b;
   --warn-rgb: 245, 200, 75;
+  --orange: #f97316;
+  --orange-rgb: 249, 115, 22;
   --critical: #c81b3a;
   --critical-rgb: 200, 27, 58;
   --contact-aos: #53b1ff;
@@ -771,6 +773,12 @@ textarea:focus-visible {
   background: rgba(var(--warn-rgb), 0.13);
 }
 
+.source-chip--orange {
+  color: #ffd6ad;
+  border-color: rgba(var(--orange-rgb), 0.42);
+  background: rgba(var(--orange-rgb), 0.13);
+}
+
 .source-chip--critical,
 .source-chip--stale,
 .source-chip--missing {
@@ -1282,6 +1290,10 @@ textarea:focus-visible {
 
 .today-watch__item--warn {
   border-left-color: var(--warn);
+}
+
+.today-watch__item--orange {
+  border-left-color: var(--orange);
 }
 
 .today-watch__item--critical {
@@ -2505,11 +2517,18 @@ button.focus-inspector__chip:disabled {
 }
 
 .metric-card--warn {
-  border-color: rgba(var(--warn-rgb), 0.24);
+  border-color: rgba(var(--warn-rgb), 0.38);
+  background: rgba(var(--warn-rgb), 0.08);
+}
+
+.metric-card--orange {
+  border-color: rgba(var(--orange-rgb), 0.42);
+  background: rgba(var(--orange-rgb), 0.09);
 }
 
 .metric-card--critical {
-  border-color: rgba(200, 27, 58, 0.28);
+  border-color: rgba(var(--critical-rgb), 0.4);
+  background: rgba(var(--critical-rgb), 0.08);
 }
 
 .stack-list,

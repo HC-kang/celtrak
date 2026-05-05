@@ -9,7 +9,7 @@ import { formatTimestamp } from '@/lib/format';
 
 const store = useAppStore();
 
-type MetricTone = 'default' | 'good' | 'warn' | 'critical';
+type MetricTone = 'default' | 'good' | 'warn' | 'orange' | 'critical';
 
 const xrayPoints = computed(() => {
   const series = store.weather?.xray.series ?? [];
@@ -77,15 +77,17 @@ function scaleText(scale?: NoaaScaleSummary) {
 
 function scaleTone(scale?: NoaaScaleSummary): MetricTone {
   const value = scale?.scale ?? 0;
-  if (value >= 3) return 'critical';
-  if (value >= 1) return 'warn';
+  if (value >= 5) return 'critical';
+  if (value >= 4) return 'orange';
+  if (value >= 3) return 'warn';
   return 'good';
 }
 
 function kpTone(kp: number | null): MetricTone {
   if (kp === null) return 'default';
-  if (kp >= 7) return 'critical';
-  if (kp >= 4) return 'warn';
+  if (kp >= 9) return 'critical';
+  if (kp >= 8) return 'orange';
+  if (kp >= 7) return 'warn';
   return 'good';
 }
 
@@ -155,7 +157,7 @@ function scaleForecastText(item: { r?: NoaaScaleSummary; s?: NoaaScaleSummary; g
 
     <PanelCard title="Geomagnetic Kp" subtitle="Forecast">
       <div class="metric-grid">
-        <MetricCard label="Current Kp" :value="`${store.weather?.kp.current ?? '—'}`" tone="warn" />
+        <MetricCard label="Current Kp" :value="`${store.weather?.kp.current ?? '—'}`" :tone="kpTone(store.weather?.kp.current ?? null)" />
         <MetricCard label="Storm Tier" :value="store.weather?.kp.storm ?? '—'" />
       </div>
       <div class="stack-list">
