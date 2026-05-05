@@ -119,7 +119,7 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v16';
+const API_CACHE_VERSION = 'v17';
 const CACHEABLE_HEADER = 'x-celtrak-cacheable';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
