@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import PanelCard from '@/components/PanelCard.vue';
 import MetricCard from '@/components/MetricCard.vue';
@@ -45,11 +45,21 @@ const contactPrecisionPendingKeys = ref<Set<string>>(new Set());
 const addingConjunctionCatalogNumbers = ref<Set<number>>(new Set());
 const cdmFeedbackToasts = ref<CdmFeedbackToast[]>([]);
 const evidenceDrawer = ref<EvidenceDrawer | null>(null);
+const operatorReadinessPanelRef = ref<{ $el?: Element } | null>(null);
+const spaceWeatherPanelRef = ref<{ $el?: Element } | null>(null);
+const upcomingPassesPanelRef = ref<{ $el?: Element } | null>(null);
+const openAnomaliesPanelRef = ref<{ $el?: Element } | null>(null);
+const conjunctionPanelHeightPx = ref<number | null>(null);
 const cdmFeedbackDismissTimers = new Map<string, number>();
 let orbitClockTimer: number | null = null;
 let contactPrecisionWorker: Worker | null = null;
 let contactPrecisionRequestId = 0;
+let conjunctionPeerResizeObserver: ResizeObserver | null = null;
 const focusHistoryLimit = 8;
+const focusedConjunctionPageSize = 8;
+const scopeConjunctionPageSize = 12;
+const focusedConjunctionVisibleLimit = ref(focusedConjunctionPageSize);
+const scopeConjunctionVisibleLimit = ref(scopeConjunctionPageSize);
 usePassPredictions(focusedTarget);
 
 interface CdmFeedbackToast {
@@ -132,12 +142,22 @@ onMounted(() => {
   orbitClockTimer = window.setInterval(() => {
     orbitClockTick.value = Date.now();
   }, 250);
+  conjunctionPeerResizeObserver = new ResizeObserver(() => updateConjunctionPanelHeight());
+  void nextTick(() => {
+    for (const panel of conjunctionPeerPanelElements()) {
+      conjunctionPeerResizeObserver?.observe(panel);
+    }
+    updateConjunctionPanelHeight();
+  });
+  window.addEventListener('resize', updateConjunctionPanelHeight);
 });
 
 onUnmounted(() => {
   if (orbitClockTimer) {
     window.clearInterval(orbitClockTimer);
   }
+  conjunctionPeerResizeObserver?.disconnect();
+  window.removeEventListener('resize', updateConjunctionPanelHeight);
   contactPrecisionWorker?.terminate();
   for (const timer of cdmFeedbackDismissTimers.values()) {
     window.clearTimeout(timer);
@@ -328,13 +348,23 @@ const focusedLinks = computed(() => {
     .slice(0, 6);
 });
 
+const sortedScopeConjunctions = computed(() => sortedConjunctionsForDisplay(cdmScopeConjunctions.value));
+
 const focusedConjunctions = computed(() => {
   const target = focusedTarget.value;
-  if (target?.type !== 'satellite') return sortedConjunctionsForDisplay(cdmScopeConjunctions.value).slice(0, 3);
+  if (target?.type !== 'satellite') return sortedScopeConjunctions.value;
   const catalogNumber = focusedCatalogNumber.value;
   if (!catalogNumber) return [];
-  return sortedConjunctionsForDisplay(filterConjunctionsByCatalog(cdmScopeConjunctions.value, [catalogNumber])).slice(0, 4);
+  return sortedConjunctionsForDisplay(filterConjunctionsByCatalog(cdmScopeConjunctions.value, [catalogNumber]));
 });
+
+const visibleFocusedConjunctions = computed(() => focusedConjunctions.value.slice(0, focusedConjunctionVisibleLimit.value));
+const hiddenFocusedConjunctionCount = computed(() => Math.max(0, focusedConjunctions.value.length - visibleFocusedConjunctions.value.length));
+const visibleScopeConjunctions = computed(() => sortedScopeConjunctions.value.slice(0, scopeConjunctionVisibleLimit.value));
+const hiddenScopeConjunctionCount = computed(() => Math.max(0, sortedScopeConjunctions.value.length - visibleScopeConjunctions.value.length));
+const conjunctionPanelStyle = computed(() =>
+  conjunctionPanelHeightPx.value ? { '--conjunction-card-height': `${conjunctionPanelHeightPx.value}px` } : {},
+);
 
 const staleTrackedObjects = computed(() =>
   trackedObjects.value.filter((item) => item.freshness.state === 'stale' || item.freshness.state === 'missing'),
@@ -525,7 +555,7 @@ const todayWatch = computed<ActionSignal[]>(() => {
       id: `watch-screening-${item.id}`,
       kicker: 'Screening',
       title: `${item.primary.name} x ${item.secondary.name}`,
-      detail: `${item.missDistanceKm.toFixed(1)} km miss · public SOCRATES signal`,
+      detail: `${item.missDistanceKm.toFixed(2)} km miss · public SOCRATES signal`,
       time: formatOrbitRelative(item.tca),
       tone: severity,
       sourceDetail: 'CelesTrak SOCRATES screening',
@@ -587,20 +617,24 @@ const todayWatch = computed<ActionSignal[]>(() => {
   return items.slice(0, 8);
 });
 
-const intelQueue = computed<ActionSignal[]>(() =>
-  [
-    ...store.alerts.map((alert) => ({
-      id: `alert-${alert.id}`,
-      kicker: formatKicker(alert.kind),
-      title: alert.title,
-      detail: alert.detail,
-      time: 'Live',
-      tone: alert.tone as Tone,
-      sourceDetail: alert.kind === 'weather' ? 'NOAA SWPC' : 'Local workspace',
-      trustTier: alert.kind === 'weather' ? 'Public source' : 'Public signal',
-      actionLabel: alert.kind === 'weather' ? 'Evidence' : 'Review',
-      action: alert.kind === 'weather' ? () => openEvidence(buildWeatherEvidence()) : goToFleetNotes,
-    })),
+const intelQueue = computed<ActionSignal[]>(() => {
+  const weatherSignal = weatherIntelSignal();
+  return [
+    ...store.alerts
+      .filter((alert) => alert.kind !== 'weather')
+      .map((alert) => ({
+        id: `alert-${alert.id}`,
+        kicker: formatKicker(alert.kind),
+        title: alert.title,
+        detail: alert.detail,
+        time: 'Live',
+        tone: alert.tone as Tone,
+        sourceDetail: 'Local workspace',
+        trustTier: 'Public signal',
+        actionLabel: 'Review',
+        action: goToFleetNotes,
+      })),
+    ...(weatherSignal ? [weatherSignal] : []),
     ...staleCdmRecords.value.slice(0, 1).map((item) => ({
       id: `cdm-stale-${item.id}`,
       kicker: 'Source stale',
@@ -617,7 +651,7 @@ const intelQueue = computed<ActionSignal[]>(() =>
       id: `conjunction-${item.id}`,
       kicker: 'Screening',
       title: `${item.primary.name} × ${item.secondary.name}`,
-      detail: `${item.missDistanceKm.toFixed(1)} km miss · public SOCRATES signal`,
+      detail: `${item.missDistanceKm.toFixed(2)} km miss · public SOCRATES signal`,
       time: formatOrbitRelative(item.tca),
       tone: cdmSeverity(item),
       sourceDetail: 'CelesTrak SOCRATES screening',
@@ -649,8 +683,8 @@ const intelQueue = computed<ActionSignal[]>(() =>
       actionLabel: 'Open schedule',
       action: goToStations,
     })),
-  ].slice(0, 7),
-);
+  ].slice(0, 7);
+});
 
 function formatKicker(value: string) {
   return value
@@ -873,7 +907,8 @@ function buildConjunctionEvidence(item: ConjunctionRecord): EvidenceDrawer {
       { label: 'Miss distance', value: `${item.missDistanceKm.toFixed(2)} km` },
       { label: 'Relative velocity', value: `${item.relVelocityKmS.toFixed(2)} km/s` },
       { label: 'Pc', value: item.pc !== undefined ? item.pc.toExponential(2) : 'Not published' },
-      { label: 'Fetched at', value: formatTimestamp(item.fetchedAt) },
+      { label: 'Celtrak snapshot', value: formatTimestamp(item.snapshotCompletedAt ?? item.fetchedAt) },
+      ...(item.sourceLastModified ? [{ label: 'CelesTrak Last-Modified', value: formatTimestamp(item.sourceLastModified) }] : []),
       { label: 'Source', value: item.source },
       ...(item.note ? [{ label: 'Fallback note', value: item.note }] : []),
     ],
@@ -892,8 +927,17 @@ function noaaScaleLabel(kind: 'R' | 'S' | 'G', scale?: NoaaScaleSummary) {
   return scale?.label ?? `${kind}—`;
 }
 
-function noaaScaleText(scale?: NoaaScaleSummary) {
-  return scale?.text ?? '—';
+function noaaScaleText(kind: 'R' | 'S' | 'G', scale?: NoaaScaleSummary) {
+  if (!scale) return '—';
+  const text = scale.text?.trim();
+  if (!text || text.toLowerCase() === 'none') return noaaQuietScaleText(kind);
+  return text;
+}
+
+function noaaQuietScaleText(kind: 'R' | 'S' | 'G') {
+  if (kind === 'G') return '폭풍 없음';
+  if (kind === 'S') return '복사폭풍 없음';
+  return '교란 없음';
 }
 
 function weatherScaleSummary() {
@@ -923,6 +967,35 @@ function weatherRiskTone(): Tone {
   return 'info';
 }
 
+function weatherIntelSignal(): ActionSignal | null {
+  const weather = store.weather;
+  if (!weather) return null;
+  const tone = weatherRiskTone();
+  const flareClass = weather.xray.flareClass;
+  const hasElevatedXray = flareClass === 'M' || flareClass === 'X';
+  if (tone === 'info' && !hasElevatedXray) return null;
+  return {
+    id: 'weather-current',
+    kicker: 'Weather',
+    title: weatherIntelTitle(tone, flareClass),
+    detail: weatherScaleSummary(),
+    time: weather.fetchedAt ? formatTimestamp(weather.fetchedAt) : 'Awaiting',
+    tone: tone === 'info' ? 'warn' : tone,
+    sourceDetail: 'NOAA SWPC',
+    trustTier: store.offline ? 'Stale public source' : 'Public source',
+    actionLabel: 'Evidence',
+    action: () => openEvidence(buildWeatherEvidence()),
+  };
+}
+
+function weatherIntelTitle(tone: Tone, flareClass?: SpaceWeatherSnapshot['xray']['flareClass']) {
+  if (tone === 'critical') return 'Space weather severe signal';
+  if (tone === 'orange') return 'Space weather crisis signal';
+  if (tone === 'warn') return 'Space weather caution';
+  if (flareClass === 'X' || flareClass === 'M') return `Solar X-ray ${flareClass}-class signal`;
+  return 'Space weather signal';
+}
+
 function kpMetricTone(kp: number | null | undefined): 'default' | 'good' | 'warn' | 'orange' | 'critical' {
   if (kp === null || kp === undefined) return 'default';
   if (kp >= 9) return 'critical';
@@ -950,9 +1023,9 @@ function buildWeatherEvidence(): EvidenceDrawer {
     rows: [
       { label: 'Kp', value: `${store.weather?.kp.current ?? '—'}` },
       { label: 'Storm tier', value: store.weather?.kp.storm ?? '—' },
-      { label: 'G scale', value: `${noaaScaleLabel('G', current?.g)} · ${noaaScaleText(current?.g)}` },
-      { label: 'S scale', value: `${noaaScaleLabel('S', current?.s)} · ${noaaScaleText(current?.s)}` },
-      { label: 'R scale', value: `${noaaScaleLabel('R', current?.r)} · ${noaaScaleText(current?.r)}` },
+      { label: 'G scale', value: `${noaaScaleLabel('G', current?.g)} · ${noaaScaleText('G', current?.g)}` },
+      { label: 'S scale', value: `${noaaScaleLabel('S', current?.s)} · ${noaaScaleText('S', current?.s)}` },
+      { label: 'R scale', value: `${noaaScaleLabel('R', current?.r)} · ${noaaScaleText('R', current?.r)}` },
       { label: 'Proton flux', value: protonFluxEvidenceLabel() },
       { label: 'X-ray class', value: `${store.weather?.xray.flareClass ?? '—'}${store.weather?.xray.classMagnitude ?? ''}` },
       { label: 'Current flux', value: store.weather?.xray.currentWm2 ? `${store.weather.xray.currentWm2.toExponential(2)} W/m²` : '—' },
@@ -1452,8 +1525,8 @@ function sortedConjunctionsForDisplay(records: ConjunctionRecord[]) {
     if (leftPassed !== rightPassed) return leftPassed ? 1 : -1;
     if (!leftPassed) {
       return (
-        new Date(left.tca).getTime() - new Date(right.tca).getTime() ||
-        conjunctionSeverityRank(cdmSeverity(left)) - conjunctionSeverityRank(cdmSeverity(right))
+        conjunctionSeverityRank(cdmSeverity(left)) - conjunctionSeverityRank(cdmSeverity(right)) ||
+        new Date(left.tca).getTime() - new Date(right.tca).getTime()
       );
     }
     return new Date(right.tca).getTime() - new Date(left.tca).getTime();
@@ -1471,7 +1544,7 @@ function upcomingConjunctionSignals(limit: number) {
     .sort((left, right) => {
       const leftMs = new Date(left.tca).getTime();
       const rightMs = new Date(right.tca).getTime();
-      return leftMs - rightMs || conjunctionSeverityRank(cdmSeverity(left)) - conjunctionSeverityRank(cdmSeverity(right));
+      return conjunctionSeverityRank(cdmSeverity(left)) - conjunctionSeverityRank(cdmSeverity(right)) || leftMs - rightMs;
     })
     .slice(0, limit);
 }
@@ -1503,6 +1576,43 @@ function cdmSeverityLabel(item: ConjunctionRecord) {
   if (severity === 'critical') return 'High-priority screening';
   if (severity === 'warn') return 'Screening signal';
   return 'Monitor signal';
+}
+
+function showMoreFocusedConjunctions() {
+  focusedConjunctionVisibleLimit.value = Math.min(
+    focusedConjunctions.value.length,
+    focusedConjunctionVisibleLimit.value + focusedConjunctionPageSize,
+  );
+}
+
+function showMoreScopeConjunctions() {
+  scopeConjunctionVisibleLimit.value = Math.min(
+    sortedScopeConjunctions.value.length,
+    scopeConjunctionVisibleLimit.value + scopeConjunctionPageSize,
+  );
+}
+
+function panelElement(component: { $el?: Element } | null) {
+  return component?.$el instanceof HTMLElement ? component.$el : null;
+}
+
+function conjunctionPeerPanelElements() {
+  return [operatorReadinessPanelRef.value, spaceWeatherPanelRef.value]
+    .map(panelElement)
+    .filter((panel): panel is HTMLElement => Boolean(panel));
+}
+
+function updateConjunctionPanelHeight() {
+  const width = window.innerWidth;
+  const peers =
+    width >= 1024
+      ? [panelElement(operatorReadinessPanelRef.value), panelElement(spaceWeatherPanelRef.value)]
+      : [];
+  const heights = peers
+    .filter((panel): panel is HTMLElement => Boolean(panel))
+    .map((panel) => Math.round(panel.getBoundingClientRect().height))
+    .filter((height) => height > 0);
+  conjunctionPanelHeightPx.value = heights.length ? Math.max(...heights) : null;
 }
 
 function catalogNumberFromSatelliteId(id: string) {
@@ -1713,9 +1823,18 @@ watch(
 watch(
   () => [cdmScope.value, cdmQueryCatalogNumbers.value.join(',')] as const,
   () => {
+    scopeConjunctionVisibleLimit.value = scopeConjunctionPageSize;
+    focusedConjunctionVisibleLimit.value = focusedConjunctionPageSize;
     void refreshCdmScope();
   },
   { immediate: true },
+);
+
+watch(
+  () => (focusedTarget.value ? focusTargetKey(focusedTarget.value) : ''),
+  () => {
+    focusedConjunctionVisibleLimit.value = focusedConjunctionPageSize;
+  },
 );
 </script>
 
@@ -2137,53 +2256,67 @@ watch(
 
             <div class="focus-inspector__section">
               <span>SOCRATES Screening</span>
-              <article v-for="item in focusedConjunctions" :key="item.id" class="focus-inspector__row" :class="`focus-inspector__row--${cdmDisplayTone(item)}`">
-                <div>
-                  <strong>{{ cdmSeverityLabel(item) }} · {{ item.missDistanceKm.toFixed(2) }} km</strong>
-                  <div class="focus-inspector__entity-line focus-inspector__entity-line--subtle">
-                    <button
-                      v-if="conjunctionObjectTarget(item.primary)"
-                      class="focus-inspector__chip focus-inspector__chip--satellite"
-                      :class="conjunctionChipClasses(item.primary)"
-                      type="button"
-                      :aria-label="conjunctionChipLabel(item.primary)"
-                      :aria-pressed="isConjunctionObjectTracked(item.primary) && focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.primary))"
-                      :disabled="isAddingConjunctionObject(item.primary)"
-                      @click="activateConjunctionObject(item.primary)"
-                      @mouseenter="setHoveredTarget(conjunctionObjectTarget(item.primary))"
-                      @mouseleave="clearHoveredTarget(conjunctionObjectTarget(item.primary))"
-                      @focus="setHoveredTarget(conjunctionObjectTarget(item.primary))"
-                      @blur="clearHoveredTarget(conjunctionObjectTarget(item.primary))"
-                    >
-                      {{ item.primary.name }}
-                    </button>
-                    <span v-else class="focus-inspector__chip focus-inspector__chip--static">{{ item.primary.name }}</span>
-                    <span aria-hidden="true">×</span>
-                    <button
-                      v-if="conjunctionObjectTarget(item.secondary)"
-                      class="focus-inspector__chip focus-inspector__chip--satellite"
-                      :class="conjunctionChipClasses(item.secondary)"
-                      type="button"
-                      :aria-label="conjunctionChipLabel(item.secondary)"
-                      :aria-pressed="isConjunctionObjectTracked(item.secondary) && focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.secondary))"
-                      :disabled="isAddingConjunctionObject(item.secondary)"
-                      @click="activateConjunctionObject(item.secondary)"
-                      @mouseenter="setHoveredTarget(conjunctionObjectTarget(item.secondary))"
-                      @mouseleave="clearHoveredTarget(conjunctionObjectTarget(item.secondary))"
-                      @focus="setHoveredTarget(conjunctionObjectTarget(item.secondary))"
-                      @blur="clearHoveredTarget(conjunctionObjectTarget(item.secondary))"
-                    >
-                      {{ item.secondary.name }}
-                    </button>
-                    <span v-else class="focus-inspector__chip focus-inspector__chip--static">{{ item.secondary.name }}</span>
+              <div
+                v-if="focusedConjunctions.length"
+                class="focus-inspector__scroll-list"
+                role="region"
+                tabindex="0"
+                aria-label="SOCRATES screening signals"
+              >
+                <article v-for="item in visibleFocusedConjunctions" :key="item.id" class="focus-inspector__row" :class="`focus-inspector__row--${cdmDisplayTone(item)}`">
+                  <div>
+                    <strong>{{ cdmSeverityLabel(item) }} · {{ item.missDistanceKm.toFixed(2) }} km</strong>
+                    <div class="focus-inspector__entity-line focus-inspector__entity-line--subtle">
+                      <button
+                        v-if="conjunctionObjectTarget(item.primary)"
+                        class="focus-inspector__chip focus-inspector__chip--satellite"
+                        :class="conjunctionChipClasses(item.primary)"
+                        type="button"
+                        :aria-label="conjunctionChipLabel(item.primary)"
+                        :aria-pressed="isConjunctionObjectTracked(item.primary) && focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.primary))"
+                        :disabled="isAddingConjunctionObject(item.primary)"
+                        @click="activateConjunctionObject(item.primary)"
+                        @mouseenter="setHoveredTarget(conjunctionObjectTarget(item.primary))"
+                        @mouseleave="clearHoveredTarget(conjunctionObjectTarget(item.primary))"
+                        @focus="setHoveredTarget(conjunctionObjectTarget(item.primary))"
+                        @blur="clearHoveredTarget(conjunctionObjectTarget(item.primary))"
+                      >
+                        {{ item.primary.name }}
+                      </button>
+                      <span v-else class="focus-inspector__chip focus-inspector__chip--static">{{ item.primary.name }}</span>
+                      <span aria-hidden="true">×</span>
+                      <button
+                        v-if="conjunctionObjectTarget(item.secondary)"
+                        class="focus-inspector__chip focus-inspector__chip--satellite"
+                        :class="conjunctionChipClasses(item.secondary)"
+                        type="button"
+                        :aria-label="conjunctionChipLabel(item.secondary)"
+                        :aria-pressed="isConjunctionObjectTracked(item.secondary) && focusTargetMatches(focusedTarget, conjunctionObjectTarget(item.secondary))"
+                        :disabled="isAddingConjunctionObject(item.secondary)"
+                        @click="activateConjunctionObject(item.secondary)"
+                        @mouseenter="setHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                        @mouseleave="clearHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                        @focus="setHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                        @blur="clearHoveredTarget(conjunctionObjectTarget(item.secondary))"
+                      >
+                        {{ item.secondary.name }}
+                      </button>
+                      <span v-else class="focus-inspector__chip focus-inspector__chip--static">{{ item.secondary.name }}</span>
+                    </div>
+                    <p>{{ formatOrbitRelative(item.tca) }}</p>
+                    <div class="source-row source-row--compact">
+                      <span class="source-chip" :class="cdmSourceChipClass(item)">{{ cdmSourceChipLabel(item) }}</span>
+                      <button class="source-link" type="button" @click="openEvidence(buildConjunctionEvidence(item))">View evidence</button>
+                    </div>
                   </div>
-                  <p>{{ formatOrbitRelative(item.tca) }}</p>
-                  <div class="source-row source-row--compact">
-                    <span class="source-chip" :class="cdmSourceChipClass(item)">{{ cdmSourceChipLabel(item) }}</span>
-                    <button class="source-link" type="button" @click="openEvidence(buildConjunctionEvidence(item))">View evidence</button>
-                  </div>
-                </div>
-              </article>
+                </article>
+              </div>
+              <div v-if="hiddenFocusedConjunctionCount" class="list-more">
+                <button class="button button--ghost panel-card__action-link" type="button" @click="showMoreFocusedConjunctions">
+                  Show {{ Math.min(focusedConjunctionPageSize, hiddenFocusedConjunctionCount) }} more
+                </button>
+                <small>{{ visibleFocusedConjunctions.length }}/{{ focusedConjunctions.length }} fetched signals</small>
+              </div>
               <p v-if="!focusedConjunctions.length" class="empty-state">표시할 public screening signal이 없습니다.</p>
             </div>
           </section>
@@ -2376,7 +2509,7 @@ watch(
       </div>
     </PanelCard>
 
-    <PanelCard title="Operator Readiness" subtitle="USER-entered mission status">
+    <PanelCard ref="operatorReadinessPanelRef" title="Operator Readiness" subtitle="USER-entered mission status">
       <template #actions>
         <span class="source-chip source-chip--info panel-card__action-link">User supplied</span>
         <OriginBadge v-if="store.fleetHealth.latestRecordedAt" origin="USER" :timestamp="store.fleetHealth.latestRecordedAt" />
@@ -2413,7 +2546,7 @@ watch(
       </p>
     </PanelCard>
 
-    <PanelCard title="Space Weather" subtitle="OSINT environmental risk">
+    <PanelCard ref="spaceWeatherPanelRef" class="panel-card--stack-actions" title="Space Weather" subtitle="OSINT environmental risk">
       <template #actions>
         <button class="button button--ghost panel-card__action-link" type="button" @click="openEvidence(buildWeatherEvidence())">Evidence</button>
         <span class="source-chip source-chip--info panel-card__action-link">NOAA SWPC</span>
@@ -2422,14 +2555,19 @@ watch(
       <div class="metric-grid">
         <MetricCard label="X-ray" :value="`${store.weather?.xray.flareClass ?? '—'}${store.weather?.xray.classMagnitude ?? ''}`" hint="GOES 1-day" />
         <MetricCard label="Kp" :value="`${store.weather?.kp.current ?? '—'}`" hint="3일 예보 반영" :tone="kpMetricTone(store.weather?.kp.current)" />
-        <MetricCard label="G" :value="noaaScaleLabel('G', store.weather?.scales?.current.g)" :hint="`지자기폭풍 · ${noaaScaleText(store.weather?.scales?.current.g)}`" :tone="noaaMetricTone(store.weather?.scales?.current.g)" />
-        <MetricCard label="S" :value="noaaScaleLabel('S', store.weather?.scales?.current.s)" :hint="`태양복사폭풍 · ${noaaScaleText(store.weather?.scales?.current.s)}`" :tone="noaaMetricTone(store.weather?.scales?.current.s)" />
-        <MetricCard label="R" :value="noaaScaleLabel('R', store.weather?.scales?.current.r)" :hint="`전리층교란 · ${noaaScaleText(store.weather?.scales?.current.r)}`" :tone="noaaMetricTone(store.weather?.scales?.current.r)" />
+        <MetricCard label="G" :value="noaaScaleLabel('G', store.weather?.scales?.current.g)" :hint="`지자기폭풍 · ${noaaScaleText('G', store.weather?.scales?.current.g)}`" :tone="noaaMetricTone(store.weather?.scales?.current.g)" />
+        <MetricCard label="S" :value="noaaScaleLabel('S', store.weather?.scales?.current.s)" :hint="`태양복사폭풍 · ${noaaScaleText('S', store.weather?.scales?.current.s)}`" :tone="noaaMetricTone(store.weather?.scales?.current.s)" />
+        <MetricCard label="R" :value="noaaScaleLabel('R', store.weather?.scales?.current.r)" :hint="`전리층교란 · ${noaaScaleText('R', store.weather?.scales?.current.r)}`" :tone="noaaMetricTone(store.weather?.scales?.current.r)" />
       </div>
       <p class="supporting-text">{{ truncate(store.weather?.notices?.[0]?.text ?? '현재 특기사항이 없습니다.', 96) }}</p>
     </PanelCard>
 
-    <PanelCard title="Public Conjunction Signals" subtitle="CelesTrak SOCRATES screening">
+    <PanelCard
+      class="panel-card--conjunction-match panel-card--stack-actions"
+      :style="conjunctionPanelStyle"
+      title="Public Conjunction Signals"
+      subtitle="CelesTrak SOCRATES screening"
+    >
       <template #actions>
         <span class="source-chip source-chip--warn panel-card__action-link">Public screening</span>
         <OriginBadge v-if="cdmScopeConjunctions[0]?.fetchedAt" origin="OSINT" :timestamp="cdmScopeConjunctions[0].fetchedAt" :stale="store.offline || staleCdmRecords.length > 0" />
@@ -2449,11 +2587,11 @@ watch(
       </div>
       <p v-if="cdmLoading" class="supporting-text">SOCRATES Plus 결과를 불러오는 중입니다.</p>
       <p v-else-if="cdmError" class="supporting-text">{{ cdmError }}</p>
-      <div class="stack-list">
-        <article v-for="item in sortedConjunctionsForDisplay(cdmScopeConjunctions).slice(0, 3)" :key="item.id" class="stack-list__item" :class="`stack-list__item--${cdmDisplayTone(item)}`">
+      <div class="stack-list stack-list--paged" role="region" tabindex="0" aria-label="Public conjunction signals">
+        <article v-for="item in visibleScopeConjunctions" :key="item.id" class="stack-list__item" :class="`stack-list__item--${cdmDisplayTone(item)}`">
           <div>
             <strong>{{ cdmSeverityLabel(item) }} · {{ item.primary.name }} × {{ item.secondary.name }}</strong>
-            <p>{{ item.missDistanceKm.toFixed(1) }} km miss · {{ item.relVelocityKmS.toFixed(1) }} km/s · public screening only</p>
+            <p>{{ item.missDistanceKm.toFixed(2) }} km miss · {{ item.relVelocityKmS.toFixed(1) }} km/s · public screening only</p>
           </div>
           <div class="stack-list__actions">
             <small>{{ formatOrbitRelative(item.tca) }}</small>
@@ -2468,9 +2606,15 @@ watch(
           <small>{{ cdmScope }}</small>
         </article>
       </div>
+      <div v-if="hiddenScopeConjunctionCount && !cdmLoading && !cdmError" class="list-more">
+        <button class="button button--ghost panel-card__action-link" type="button" @click="showMoreScopeConjunctions">
+          Show {{ Math.min(scopeConjunctionPageSize, hiddenScopeConjunctionCount) }} more
+        </button>
+        <small>{{ visibleScopeConjunctions.length }}/{{ sortedScopeConjunctions.length }} fetched signals</small>
+      </div>
     </PanelCard>
 
-    <PanelCard title="Upcoming Passes" subtitle="Derived contact windows">
+    <PanelCard ref="upcomingPassesPanelRef" title="Upcoming Passes" subtitle="Derived contact windows">
       <template #actions>
         <span class="source-chip source-chip--info panel-card__action-link">Derived from TLE</span>
         <OriginBadge v-if="store.passPredictions[0]?.computedAt" origin="DERIVED" :timestamp="store.passPredictions[0].computedAt" />
@@ -2478,7 +2622,7 @@ watch(
       <PassList :passes="store.passPredictions.slice(0, 5)" :station-lookup="stationLookup" />
     </PanelCard>
 
-    <PanelCard title="Open Anomalies" subtitle="USER issue log">
+    <PanelCard ref="openAnomaliesPanelRef" title="Open Anomalies" subtitle="USER issue log">
       <div class="stack-list">
         <article v-for="anomaly in store.anomalies.slice(0, 5)" :key="anomaly.id" class="stack-list__item">
           <div>

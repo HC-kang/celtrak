@@ -184,22 +184,7 @@ export const mockDecay: DecayPrediction[] = [
 
 export const mockGroundStations: GroundStation[] = defaultGroundStations;
 
-export const mockAlerts: DashboardAlert[] = [
-  {
-    id: 'alert-weather',
-    kind: 'weather',
-    title: '우주 기상 주의',
-    detail: 'NOAA Kp 4.0, 통신 링크 감쇠 가능성이 있습니다.',
-    tone: 'warn',
-  },
-  {
-    id: 'alert-socrates',
-    kind: 'degraded',
-    title: 'SOCRATES 최신화 지연',
-    detail: '근접 접근 리스트가 3시간 전 스냅샷일 수 있습니다.',
-    tone: 'info',
-  },
-];
+export const mockAlerts: DashboardAlert[] = [];
 
 function createCatalogEntry(input: {
   catalogNumber: number;

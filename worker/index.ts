@@ -22,6 +22,13 @@ interface R2BucketLike {
     },
   ): Promise<unknown>;
   delete(keys: string | string[]): Promise<void>;
+  list?(options?: { prefix?: string; cursor?: string; limit?: number }): Promise<R2ObjectsLike>;
+}
+
+interface R2ObjectsLike {
+  objects: Array<{ key: string }>;
+  truncated: boolean;
+  cursor?: string;
 }
 
 interface CatalogEntry {
@@ -103,7 +110,7 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v14';
+const API_CACHE_VERSION = 'v15';
 const CACHEABLE_HEADER = 'x-celtrak-cacheable';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
@@ -562,6 +569,10 @@ async function refreshCatalogSnapshot(env: Env) {
     });
   }
 
+  await deleteUnreferencedCatalogSnapshots(bucket, manifest).catch((error) => {
+    console.warn('Catalog orphan snapshot cleanup failed', error);
+  });
+
   return true;
 }
 
@@ -849,8 +860,10 @@ async function getSocratesSnapshotResults(env: Env, order: string, limit: number
 
   return readSocratesSnapshotRecords(bucket, manifest, {
     catalogNumbers,
-    fetchedAt: manifest.sourceLastModified ?? manifest.completedAt,
+    fetchedAt: manifest.completedAt,
     limit,
+    sourceLastModified: manifest.sourceLastModified,
+    snapshotCompletedAt: manifest.completedAt,
   });
 }
 
@@ -866,7 +879,7 @@ async function getSocratesSnapshotManifest(bucket: R2BucketLike, order: string) 
 async function readSocratesSnapshotRecords(
   bucket: R2BucketLike,
   manifest: SocratesSnapshotManifest,
-  options: { catalogNumbers: Set<number>; fetchedAt: string; limit: number },
+  options: { catalogNumbers: Set<number>; fetchedAt: string; limit: number; sourceLastModified?: string; snapshotCompletedAt?: string },
 ) {
   const records: ConjunctionRecord[] = [];
   let lineBuffer = '';
@@ -919,7 +932,7 @@ async function readSocratesSnapshotRecords(
 function parseSocratesCsvLineForSnapshot(
   line: string,
   indexes: Record<string, number> | null,
-  options: { catalogNumbers: Set<number>; fetchedAt: string; stale?: boolean; note?: string },
+  options: { catalogNumbers: Set<number>; fetchedAt: string; stale?: boolean; note?: string; sourceLastModified?: string; snapshotCompletedAt?: string },
 ) {
   const normalizedLine = line.replace(/^\uFEFF/, '').trim();
   if (!normalizedLine) return null;
@@ -1005,6 +1018,10 @@ async function refreshSocratesSnapshot(env: Env, order: string) {
     });
   }
 
+  await deleteUnreferencedSocratesSnapshots(bucket, order, manifest).catch((error) => {
+    console.warn('SOCRATES orphan snapshot cleanup failed', error);
+  });
+
   return true;
 }
 
@@ -1026,7 +1043,49 @@ function socratesSnapshotRef(manifest: SocratesSnapshotManifest): SocratesSnapsh
 
 async function deleteSocratesSnapshot(bucket: R2BucketLike, snapshot: SocratesSnapshotRef) {
   const keys = snapshot.chunks.map((chunk) => chunk.key);
-  if (keys.length) await bucket.delete(keys);
+  await deleteR2Keys(bucket, keys);
+}
+
+async function deleteUnreferencedSocratesSnapshots(bucket: R2BucketLike, order: string, manifest: SocratesSnapshotManifest) {
+  if (!bucket.list) return;
+  const retain = new Set([
+    ...manifest.chunks.map((chunk) => chunk.key),
+    ...(manifest.previous?.chunks.map((chunk) => chunk.key) ?? []),
+  ]);
+  const staleKeys: string[] = [];
+  for await (const key of listR2Keys(bucket, `socrates/${order}/snapshots/`)) {
+    if (!retain.has(key)) staleKeys.push(key);
+  }
+  await deleteR2Keys(bucket, staleKeys);
+}
+
+async function deleteUnreferencedCatalogSnapshots(bucket: R2BucketLike, manifest: CatalogSnapshotManifest) {
+  if (!bucket.list) return;
+  const retain = new Set([manifest.dataKey, manifest.previous?.dataKey].filter((key): key is string => Boolean(key)));
+  const staleKeys: string[] = [];
+  for await (const key of listR2Keys(bucket, `catalog/${CATALOG_SNAPSHOT_SCOPE}/snapshots/`)) {
+    if (!retain.has(key)) staleKeys.push(key);
+  }
+  await deleteR2Keys(bucket, staleKeys);
+}
+
+async function* listR2Keys(bucket: R2BucketLike, prefix: string) {
+  let cursor: string | undefined;
+  do {
+    const page = await bucket.list?.({ prefix, cursor, limit: 1000 });
+    if (!page) return;
+    for (const object of page.objects) {
+      yield object.key;
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+}
+
+async function deleteR2Keys(bucket: R2BucketLike, keys: string[]) {
+  for (let index = 0; index < keys.length; index += 100) {
+    const batch = keys.slice(index, index + 100);
+    if (batch.length) await bucket.delete(batch);
+  }
 }
 
 function parseSocratesSnapshotManifest(text: string): SocratesSnapshotManifest | null {
@@ -1332,7 +1391,7 @@ function csvHeaderIndexes(headerLine: string) {
 function createSocratesCsvRecord(
   cells: string[],
   indexes: Record<string, number>,
-  options: { catalogNumbers: Set<number>; fetchedAt: string; stale?: boolean; note?: string },
+  options: { catalogNumbers: Set<number>; fetchedAt: string; stale?: boolean; note?: string; sourceLastModified?: string; snapshotCompletedAt?: string },
 ): ConjunctionRecord | null {
   const catalogNumber1 = numberFromCsv(cells[indexes.NORAD_CAT_ID_1]);
   const catalogNumber2 = numberFromCsv(cells[indexes.NORAD_CAT_ID_2]);
@@ -1367,6 +1426,8 @@ function createSocratesCsvRecord(
     pc: numberFromCsv(cells[indexes.MAX_PROB]),
     source: 'celestrak-socrates',
     fetchedAt: options.fetchedAt,
+    ...(options.sourceLastModified ? { sourceLastModified: options.sourceLastModified } : {}),
+    ...(options.snapshotCompletedAt ? { snapshotCompletedAt: options.snapshotCompletedAt } : {}),
     note: options.note,
   };
 }

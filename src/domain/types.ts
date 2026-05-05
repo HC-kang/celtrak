@@ -174,6 +174,8 @@ export interface ConjunctionRecord extends TimestampedOrigin {
   pc?: number;
   source: 'celestrak-socrates' | 'self-computed';
   fetchedAt: string;
+  sourceLastModified?: string;
+  snapshotCompletedAt?: string;
   note?: string;
 }
 
