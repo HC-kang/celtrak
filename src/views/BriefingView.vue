@@ -297,10 +297,11 @@ const cdmScopeConjunctions = computed(() => {
   const catalogNumbers = cdmQueryCatalogNumbers.value;
   return catalogNumbers.length ? filterConjunctionsByCatalog(records, catalogNumbers) : [];
 });
+const staleCdmRecords = computed(() => cdmScopeConjunctions.value.filter(isStaleConjunction));
 const riskSatelliteTones = computed<Record<string, 'warn' | 'critical'>>(() => {
   const tones: Record<string, 'warn' | 'critical'> = {};
   for (const item of cdmScopeConjunctions.value) {
-    if (cdmHasPassed(item)) continue;
+    if (isStaleConjunction(item) || cdmHasPassed(item)) continue;
     const severity = cdmSeverity(item);
     if (severity === 'info') continue;
     addCatalogRiskTone(tones, item.primary.catalogNumber, severity);
@@ -352,9 +353,9 @@ const trustOverview = computed(() => [
   {
     label: 'Screening',
     sourceDetail: 'CelesTrak SOCRATES',
-    trustTier: 'Public screening',
-    tone: cdmScopeConjunctions.value.length ? 'warn' : 'info',
-    detail: `${cdmScopeConjunctions.value.length} public screening signals`,
+    trustTier: staleCdmRecords.value.length ? 'Stale public source' : 'Public screening',
+    tone: staleCdmRecords.value.length ? 'warn' : cdmScopeConjunctions.value.length ? 'warn' : 'info',
+    detail: cdmOverviewDetail(),
   },
   {
     label: 'Space Weather',
@@ -443,7 +444,7 @@ const activeLayers = computed(() => [
   { label: 'Satellite States', detail: `${riskSatelliteIds.value.length} risk · ${contactLinks.value.filter((link) => link.status === 'IN_CONTACT').length} contact`, active: visibleFleetEntries.value.length > 0 },
   { label: 'Ground Stations', detail: `${store.groundStations.filter((station) => station.enabled).length} online`, active: true },
   { label: 'Contact Links', detail: `${contactLinks.value.filter((link) => link.status === 'IN_CONTACT').length} active`, active: contactLinks.value.some((link) => link.status === 'IN_CONTACT') },
-  { label: 'Public Screening', detail: `${cdmScopeConjunctions.value.length} ${cdmScope.value} signals`, active: cdmScopeConjunctions.value.length > 0 },
+  { label: 'Public Screening', detail: cdmLayerDetail(), active: cdmScopeConjunctions.value.length > 0 },
   { label: 'Space Weather', detail: store.weather?.kp.storm ?? (store.loading ? '불러오는 중' : '데이터 없음'), active: Boolean(store.weather) },
   { label: 'Decay Watch', detail: `${store.filteredDecayPredictions.length} entries`, active: store.filteredDecayPredictions.length > 0 },
 ]);
@@ -497,6 +498,22 @@ const todayWatch = computed<ActionSignal[]>(() => {
       trustTier: item.trustTier,
       actionLabel: 'Evidence',
       action: () => openEvidence(buildCatalogEvidence(item)),
+    });
+  }
+
+  const staleCdm = staleCdmRecords.value[0];
+  if (staleCdm) {
+    items.push({
+      id: `watch-screening-stale-${staleCdm.id}`,
+      kicker: 'Source stale',
+      title: 'SOCRATES screening fallback',
+      detail: cdmFallbackDetail(staleCdm),
+      time: staleCdm.fetchedAt ? formatTimestamp(staleCdm.fetchedAt) : 'Fallback',
+      tone: 'warn',
+      sourceDetail: 'CelesTrak SOCRATES screening',
+      trustTier: 'Stale public source',
+      actionLabel: 'View evidence',
+      action: () => openEvidence(buildConjunctionEvidence(staleCdm)),
     });
   }
 
@@ -581,6 +598,18 @@ const intelQueue = computed<ActionSignal[]>(() =>
       trustTier: alert.kind === 'weather' ? 'Public source' : 'Public signal',
       actionLabel: alert.kind === 'weather' ? 'Evidence' : 'Review',
       action: alert.kind === 'weather' ? () => openEvidence(buildWeatherEvidence()) : goToFleetNotes,
+    })),
+    ...staleCdmRecords.value.slice(0, 1).map((item) => ({
+      id: `cdm-stale-${item.id}`,
+      kicker: 'Source stale',
+      title: 'SOCRATES screening fallback',
+      detail: cdmFallbackDetail(item),
+      time: item.fetchedAt ? formatTimestamp(item.fetchedAt) : 'Fallback',
+      tone: 'warn' as Tone,
+      sourceDetail: 'CelesTrak SOCRATES screening',
+      trustTier: 'Stale public source',
+      actionLabel: 'View evidence',
+      action: () => openEvidence(buildConjunctionEvidence(item)),
     })),
     ...upcomingConjunctionSignals(2).map((item) => ({
       id: `conjunction-${item.id}`,
@@ -829,9 +858,9 @@ function buildCatalogEvidence(item: TrackedObjectSummary): EvidenceDrawer {
 function buildConjunctionEvidence(item: ConjunctionRecord): EvidenceDrawer {
   return {
     title: `${item.primary.name} x ${item.secondary.name}`,
-    subtitle: 'Public conjunction screening signal',
-    sourceDetail: 'CelesTrak SOCRATES screening',
-    trustTier: item.stale || store.offline ? 'Stale public source' : 'Public screening',
+    subtitle: isStaleConjunction(item) ? 'Stale public screening fallback' : 'Public conjunction screening signal',
+    sourceDetail: isStaleConjunction(item) ? 'CelesTrak SOCRATES fallback' : 'CelesTrak SOCRATES screening',
+    trustTier: isStaleConjunction(item) || store.offline ? 'Stale public source' : 'Public screening',
     tone: cdmEvidenceTone(item),
     rows: [
       { label: 'Celtrak interpretation', value: cdmSeverityLabel(item) },
@@ -844,9 +873,12 @@ function buildConjunctionEvidence(item: ConjunctionRecord): EvidenceDrawer {
       { label: 'Pc', value: item.pc !== undefined ? item.pc.toExponential(2) : 'Not published' },
       { label: 'Fetched at', value: formatTimestamp(item.fetchedAt) },
       { label: 'Source', value: item.source },
+      ...(item.note ? [{ label: 'Fallback note', value: item.note }] : []),
     ],
     links: [{ label: 'CelesTrak SOCRATES', href: 'https://celestrak.org/SOCRATES/' }],
-    note: 'SOCRATES is treated as a public screening signal. Operator-confirmed collision-avoidance data is not available, so this is not a maneuver recommendation.',
+    note: isStaleConjunction(item)
+      ? 'This row is a stale fallback because Celtrak could not fetch the live CelesTrak SOCRATES file. Do not treat it as a current screening result.'
+      : 'SOCRATES is treated as a public screening signal. Operator-confirmed collision-avoidance data is not available, so this is not a maneuver recommendation.',
   };
 }
 
@@ -1300,6 +1332,24 @@ function cdmSeverity(item: ConjunctionRecord) {
   return classifyConjunctionSeverity(item);
 }
 
+function isStaleConjunction(item: ConjunctionRecord) {
+  return Boolean(item.stale || item.origin === 'STALE');
+}
+
+function cdmOverviewDetail() {
+  if (staleCdmRecords.value.length) return `${staleCdmRecords.value.length} stale fallback · ${cdmFallbackDetail(staleCdmRecords.value[0])}`;
+  return `${cdmScopeConjunctions.value.length} public screening signals`;
+}
+
+function cdmLayerDetail() {
+  if (staleCdmRecords.value.length) return `${staleCdmRecords.value.length} stale fallback`;
+  return `${cdmScopeConjunctions.value.length} ${cdmScope.value} signals`;
+}
+
+function cdmFallbackDetail(item: ConjunctionRecord) {
+  return item.note ? `Upstream unavailable: ${item.note}` : 'Live SOCRATES file unavailable';
+}
+
 function cdmHasPassed(item: ConjunctionRecord) {
   const tcaMs = new Date(item.tca).getTime();
   const baseMs = displayedOrbitTime.value.getTime();
@@ -1307,23 +1357,30 @@ function cdmHasPassed(item: ConjunctionRecord) {
 }
 
 function cdmDisplayTone(item: ConjunctionRecord) {
+  if (isStaleConjunction(item)) return 'warn';
   return cdmHasPassed(item) ? 'passed' : cdmSeverity(item);
 }
 
 function cdmEvidenceTone(item: ConjunctionRecord): Tone {
+  if (isStaleConjunction(item)) return 'warn';
   return cdmHasPassed(item) ? 'info' : cdmSeverity(item);
 }
 
 function cdmSourceChipLabel(item: ConjunctionRecord) {
+  if (isStaleConjunction(item)) return 'Stale fallback';
   return cdmHasPassed(item) ? 'Past public signal' : 'Public screening';
 }
 
 function cdmSourceChipClass(item: ConjunctionRecord) {
+  if (isStaleConjunction(item)) return 'source-chip--stale';
   return cdmHasPassed(item) ? 'source-chip--neutral' : 'source-chip--warn';
 }
 
 function sortedConjunctionsForDisplay(records: ConjunctionRecord[]) {
   return [...records].sort((left, right) => {
+    const leftStale = isStaleConjunction(left);
+    const rightStale = isStaleConjunction(right);
+    if (leftStale !== rightStale) return leftStale ? 1 : -1;
     const leftPassed = cdmHasPassed(left);
     const rightPassed = cdmHasPassed(right);
     if (leftPassed !== rightPassed) return leftPassed ? 1 : -1;
@@ -1341,6 +1398,7 @@ function upcomingConjunctionSignals(limit: number) {
   const nowMs = displayedOrbitTime.value.getTime();
   return cdmScopeConjunctions.value
     .filter((item) => {
+      if (isStaleConjunction(item)) return false;
       const tcaMs = new Date(item.tca).getTime();
       return Number.isFinite(tcaMs) && tcaMs >= nowMs;
     })
@@ -1373,6 +1431,7 @@ function addRiskTone(tones: Record<string, 'warn' | 'critical'>, id: string, ton
 }
 
 function cdmSeverityLabel(item: ConjunctionRecord) {
+  if (isStaleConjunction(item)) return 'Stale screening fallback';
   if (cdmHasPassed(item)) return 'Passed screening record';
   const severity = cdmSeverity(item);
   if (severity === 'critical') return 'High-priority screening';
@@ -2304,7 +2363,7 @@ watch(
     <PanelCard title="Public Conjunction Signals" subtitle="CelesTrak SOCRATES screening">
       <template #actions>
         <span class="source-chip source-chip--warn panel-card__action-link">Public screening</span>
-        <OriginBadge v-if="cdmScopeConjunctions[0]?.fetchedAt" origin="OSINT" :timestamp="cdmScopeConjunctions[0].fetchedAt" :stale="store.offline" />
+        <OriginBadge v-if="cdmScopeConjunctions[0]?.fetchedAt" origin="OSINT" :timestamp="cdmScopeConjunctions[0].fetchedAt" :stale="store.offline || staleCdmRecords.length > 0" />
       </template>
       <div class="tracking-scope__tabs cdm-scope__tabs" role="tablist" aria-label="CDM scope">
         <button class="tracking-scope__tab" :class="{ 'tracking-scope__tab--active': cdmScope === 'all' }" type="button" @click="cdmScope = 'all'">전체</button>
