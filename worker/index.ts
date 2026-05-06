@@ -1,3 +1,5 @@
+import { normalizeKasaSupplement } from './spaceWeatherKasa';
+
 interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
   SOCRATES_BUCKET?: R2BucketLike;
@@ -119,7 +121,7 @@ const CELESTRAK_GROUPS = [
   { key: 'gps-ops', label: 'GPS' },
   { key: 'active', label: 'Active' },
 ] as const;
-const API_CACHE_VERSION = 'v18';
+const API_CACHE_VERSION = 'v19';
 const CACHEABLE_HEADER = 'x-celtrak-cacheable';
 const DEFAULT_CATALOG_LIMIT = 20_000;
 const MAX_CATALOG_LIMIT = 25_000;
@@ -149,6 +151,10 @@ const CELESTRAK_ORIGINS = ['http://celestrak.org', 'https://celestrak.org'] as c
 const SWPC_NOAA_SCALES_URL = 'https://services.swpc.noaa.gov/products/noaa-scales.json';
 const SWPC_PROTON_FLUX_URL = 'https://services.swpc.noaa.gov/json/goes/primary/integral-protons-3-day.json';
 const SWPC_XRAY_FLUX_URL = 'https://services.swpc.noaa.gov/json/goes/primary/xrays-3-day.json';
+const KASA_WARN_URL = 'https://spaceweather.kasa.go.kr/api/warn';
+const KASA_PROB_URL = 'https://spaceweather.kasa.go.kr/api/prob';
+const KASA_KINDEX_URL = 'https://spaceweather.kasa.go.kr/api/kindex';
+const KASA_FETCH_TIMEOUT_MS = 4_500;
 const CELESTRAK_REQUEST_HEADERS = {
   accept: 'text/plain, text/csv, application/json, */*',
 };
@@ -1509,23 +1515,37 @@ function normalizeOpsStatus(value: unknown) {
 
 async function getSpaceWeatherSummary() {
   const fetchedAt = new Date().toISOString();
-  const [xrayResult, kpResult, alertsResult, scalesResult, protonResult] = await Promise.allSettled([
+  const [xrayResult, kpResult, alertsResult, scalesResult, protonResult, kasaWarnResult, kasaProbResult, kasaKindexResult] = await Promise.allSettled([
     fetchJson<unknown[]>(SWPC_XRAY_FLUX_URL),
     fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json'),
     fetchJson<unknown[]>('https://services.swpc.noaa.gov/products/alerts.json'),
     fetchJson<unknown>(SWPC_NOAA_SCALES_URL),
     fetchJson<unknown[]>(SWPC_PROTON_FLUX_URL),
+    fetchJson<unknown>(KASA_WARN_URL, KASA_FETCH_TIMEOUT_MS),
+    fetchJson<unknown>(KASA_PROB_URL, KASA_FETCH_TIMEOUT_MS),
+    fetchJson<unknown>(KASA_KINDEX_URL, KASA_FETCH_TIMEOUT_MS),
   ]);
 
   const xrayRows = xrayResult.status === 'fulfilled' && Array.isArray(xrayResult.value) ? xrayResult.value : [];
   const kpRows = kpResult.status === 'fulfilled' && Array.isArray(kpResult.value) ? kpResult.value : [];
   const protonRows = protonResult.status === 'fulfilled' && Array.isArray(protonResult.value) ? protonResult.value : [];
+  const kasaWarnRaw = kasaWarnResult.status === 'fulfilled' ? kasaWarnResult.value : undefined;
+  const kasaProbRaw = kasaProbResult.status === 'fulfilled' ? kasaProbResult.value : undefined;
+  const kasaKindexRaw = kasaKindexResult.status === 'fulfilled' ? kasaKindexResult.value : undefined;
   const xraySeries = normalizeXraySeries(xrayRows);
   const latestFlux = xraySeries.at(-1)?.flux ?? null;
   const kp = normalizeKp(kpRows);
   const proton = normalizeProtonFlux(protonRows);
   const noaaScales = scalesResult.status === 'fulfilled' ? normalizeNoaaScales(scalesResult.value) : null;
   const scales = noaaScales ?? deriveNoaaScales({ fetchedAt, xrayFlux: latestFlux, protonPfu: proton.currentPfu, kp: kp.current });
+  const kasaFailures = [kasaWarnResult, kasaProbResult, kasaKindexResult].filter((result) => result.status === 'rejected').length;
+  const kasa = normalizeKasaSupplement({
+    fetchedAt,
+    warn: kasaWarnRaw,
+    prob: kasaProbRaw,
+    kindex: kasaKindexRaw,
+    stale: kasaFailures > 0,
+  });
   const xrayMissing = !xraySeries.length;
   const kpMissing = kp.current === null && !kp.forecast.length;
   const protonMissing = proton.currentPfu === null;
@@ -1563,6 +1583,13 @@ async function getSpaceWeatherSummary() {
       text: 'SWPC NOAA Scales summary unavailable; deriving current R/S/G from public X-ray, proton, and Kp feeds.',
     });
   }
+  if (kasaFailures) {
+    sourceNotices.push({
+      issuedAt: fetchedAt,
+      type: 'SOURCE_PARTIAL',
+      text: 'KASA KSWC supplement unavailable or partial; showing NOAA SWPC canonical space weather data.',
+    });
+  }
 
   return {
     origin: 'OSINT',
@@ -1581,6 +1608,7 @@ async function getSpaceWeatherSummary() {
     },
     proton,
     scales,
+    kasa,
     notices: [...sourceNotices, ...notices].slice(0, 5),
   };
 }
