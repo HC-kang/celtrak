@@ -107,6 +107,15 @@ export const mockWeather: SpaceWeatherSnapshot = {
   },
   kp: {
     current: 4,
+    series: Array.from({ length: 24 }).map((_, index) => {
+      const isFuture = index > 14;
+      return {
+        t: new Date(Date.now() + (index - 14) * 3 * 60 * 60 * 1000).toISOString(),
+        kp: Math.max(0, 2.2 + Math.sin(index / 2.4) * 1.2 + (isFuture ? 0.4 : 0)),
+        observed: isFuture ? ('predicted' as const) : ('observed' as const),
+        noaaScale: index === 16 ? 'G1' : null,
+      };
+    }),
     forecast: [
       { t: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(), kp: 4 },
       { t: new Date(Date.now() + 18 * 60 * 60 * 1000).toISOString(), kp: 5 },
@@ -118,6 +127,10 @@ export const mockWeather: SpaceWeatherSnapshot = {
     currentPfu: 0.24,
     energy: '>=10 MeV',
     observedAt: fetchedAt,
+    series: Array.from({ length: 36 }).map((_, index) => ({
+      t: new Date(Date.now() - (35 - index) * 10 * 60 * 1000).toISOString(),
+      flux: Math.max(0.05, 0.18 + Math.sin(index / 4.5) * 0.05 + (index > 24 ? 0.02 : 0)),
+    })),
   },
   scales: {
     observedAt: fetchedAt,

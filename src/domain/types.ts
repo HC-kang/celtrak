@@ -194,6 +194,12 @@ export interface SpaceWeatherSnapshot extends TimestampedOrigin {
   };
   kp: {
     current: number | null;
+    series?: Array<{
+      t: string;
+      kp: number;
+      observed?: 'observed' | 'estimated' | 'predicted';
+      noaaScale?: string | null;
+    }>;
     forecast?: Array<{ t: string; kp: number }>;
     storm: 'QUIET' | 'UNSETTLED' | 'MINOR' | 'MODERATE' | 'STRONG' | 'SEVERE' | 'EXTREME';
   };
@@ -201,6 +207,7 @@ export interface SpaceWeatherSnapshot extends TimestampedOrigin {
     currentPfu: number | null;
     energy: string;
     observedAt?: string;
+    series?: Array<{ t: string; flux: number }>;
   };
   scales?: {
     observedAt?: string;
