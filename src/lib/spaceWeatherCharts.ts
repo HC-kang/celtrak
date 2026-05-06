@@ -1,7 +1,6 @@
 import type { NoaaScaleSummary, SpaceWeatherSnapshot } from '@/domain/types';
 
 export type WeatherChartMode = 'geomagnetic' | 'radiation' | 'ionosphere';
-export type WeatherPanelKey = WeatherChartMode | 'kasa';
 export type WeatherMetricKey = 'kp' | 'g' | 's' | 'r';
 export type WeatherTone = 'default' | 'good' | 'warn' | 'orange' | 'critical';
 
@@ -32,7 +31,6 @@ export interface WeatherChartSeries {
   axisIndex: number;
   unit: string;
   stepped?: boolean;
-  dashed?: boolean;
   points: WeatherChartPoint[];
 }
 
@@ -64,7 +62,7 @@ export interface WeatherSelectedReadout {
 }
 
 export interface WeatherChartModel {
-  mode: WeatherPanelKey;
+  mode: WeatherChartMode;
   title: string;
   subtitle: string;
   emptyText: string;
@@ -75,31 +73,11 @@ export interface WeatherChartModel {
   currentReadout: WeatherSelectedReadout | null;
 }
 
-export interface WeatherDashboardReadout {
-  t: string;
-  rows: Array<{
-    panelKey: WeatherPanelKey;
-    panelTitle: string;
-    name: string;
-    value: string;
-    detail: string;
-    sourceLabel: string;
-  }>;
-}
-
-export interface WeatherDashboardModel {
-  panels: WeatherChartModel[];
-  extent: { start: number; end: number } | null;
-  currentReadout: WeatherDashboardReadout | null;
-}
-
 const COLORS = {
   kp: '#0070cc',
   g: '#6b7280',
   s: '#f5c84b',
   r: '#c81b3a',
-  kk: '#0f766e',
-  kasaKp: '#64748b',
 };
 
 export const WEATHER_RANGE_PRESETS = [
@@ -171,22 +149,6 @@ export function buildWeatherChartModel(weather: SpaceWeatherSnapshot | null, mod
   return buildGeomagneticModel(weather, nowMs);
 }
 
-export function buildWeatherDashboardModel(weather: SpaceWeatherSnapshot | null, nowMs = Date.now()): WeatherDashboardModel {
-  const panels = [
-    buildGeomagneticModel(weather, nowMs),
-    buildRadiationModel(weather, nowMs),
-    buildIonosphereModel(weather, nowMs),
-    buildKasaKindexModel(weather, nowMs),
-  ];
-  const bounds = panels.flatMap((panel) => (panel.extent ? [panel.extent.start, panel.extent.end] : []));
-  const extent = bounds.length ? { start: Math.min(...bounds), end: Math.max(...bounds) } : null;
-  return {
-    panels,
-    extent,
-    currentReadout: readoutForDashboardCurrent(panels, nowMs),
-  };
-}
-
 export function findNearestReadout(model: WeatherChartModel, targetTimeMs: number): WeatherSelectedReadout | null {
   const allPoints = model.series.flatMap((series) => series.points.map((point) => ({ point, series })));
   if (!allPoints.length || !Number.isFinite(targetTimeMs)) return model.currentReadout;
@@ -196,11 +158,6 @@ export function findNearestReadout(model: WeatherChartModel, targetTimeMs: numbe
   }, { ...allPoints[0], distance: Number.POSITIVE_INFINITY });
   const selectedTimeMs = new Date(nearest.point.t).getTime();
   return readoutForTime(model, selectedTimeMs);
-}
-
-export function findNearestDashboardReadout(model: WeatherDashboardModel, targetTimeMs: number): WeatherDashboardReadout | null {
-  if (!Number.isFinite(targetTimeMs)) return model.currentReadout;
-  return readoutForDashboardTime(model.panels, targetTimeMs);
 }
 
 export function classifyRadioBlackoutScale(flux: number | null | undefined) {
@@ -374,84 +331,11 @@ function buildIonosphereModel(weather: SpaceWeatherSnapshot | null, nowMs: numbe
   }, nowMs);
 }
 
-function buildKasaKindexModel(weather: SpaceWeatherSnapshot | null, nowMs: number): WeatherChartModel {
-  const rows = normalizeKasaKindexTimeline(weather);
-  const kkPoints = rows
-    .filter((row) => row.kk !== null)
-    .map((row) => ({
-      t: row.t,
-      value: row.kk as number,
-      label: `Kk ${formatKp(row.kk as number)}`,
-      detail: 'Korean geomagnetic disturbance index',
-      sourceLabel: 'KASA KSWC',
-      observed: 'observed' as const,
-    }));
-  const kpPoints = rows
-    .filter((row) => row.kp !== null)
-    .map((row) => ({
-      t: row.t,
-      value: row.kp as number,
-      label: `Kp ${formatKp(row.kp as number)}`,
-      detail: 'KASA Kp reference; SWPC remains canonical',
-      sourceLabel: 'KASA KSWC',
-      observed: 'observed' as const,
-    }));
-
-  return createModel({
-    mode: 'kasa',
-    title: 'KASA K-index',
-    subtitle: 'Korean Kk with KASA Kp reference',
-    emptyText: 'KASA Kk/Kp 보조 시계열 데이터가 없습니다.',
-    axes: [{ name: 'K', min: 0, max: 9, type: 'value', unit: 'K', formatter: 'kp' }],
-    thresholds: [
-      { axisIndex: 0, value: 5, label: 'K=5', tone: 'warn' },
-      { axisIndex: 0, value: 6, label: 'K=6', tone: 'warn' },
-      { axisIndex: 0, value: 7, label: 'K=7', tone: 'warn' },
-      { axisIndex: 0, value: 8, label: 'K=8', tone: 'orange' },
-      { axisIndex: 0, value: 9, label: 'K=9', tone: 'critical' },
-    ],
-    series: [
-      { key: 'kasa-kk', name: 'Kk index', color: COLORS.kk, axisIndex: 0, unit: 'Kk', points: kkPoints },
-      { key: 'kasa-kp', name: 'KASA Kp reference', color: COLORS.kasaKp, axisIndex: 0, unit: 'Kp', dashed: true, points: kpPoints },
-    ],
-  }, nowMs);
-}
-
 function createModel(input: Omit<WeatherChartModel, 'extent' | 'currentReadout'>, nowMs: number): WeatherChartModel {
   const timestamps = input.series.flatMap((series) => series.points.map((point) => new Date(point.t).getTime())).filter(Number.isFinite);
   const extent = timestamps.length ? { start: Math.min(...timestamps), end: Math.max(...timestamps) } : null;
   const model = { ...input, extent, currentReadout: null };
   return { ...model, currentReadout: readoutForCurrent(model, nowMs) };
-}
-
-function readoutForDashboardCurrent(panels: WeatherChartModel[], targetTimeMs: number): WeatherDashboardReadout | null {
-  const rows = panels.flatMap((panel) =>
-    (panel.currentReadout?.rows ?? []).map((row) => ({
-      panelKey: panel.mode,
-      panelTitle: panel.title,
-      ...row,
-    })),
-  );
-  if (!rows.length) return null;
-  return {
-    t: new Date(targetTimeMs).toISOString(),
-    rows,
-  };
-}
-
-function readoutForDashboardTime(panels: WeatherChartModel[], targetTimeMs: number): WeatherDashboardReadout | null {
-  const rows = panels.flatMap((panel) =>
-    (readoutForTime(panel, targetTimeMs)?.rows ?? []).map((row) => ({
-      panelKey: panel.mode,
-      panelTitle: panel.title,
-      ...row,
-    })),
-  );
-  if (!rows.length) return null;
-  return {
-    t: new Date(targetTimeMs).toISOString(),
-    rows,
-  };
 }
 
 function readoutForCurrent(model: Omit<WeatherChartModel, 'currentReadout'>, targetTimeMs: number): WeatherSelectedReadout | null {
@@ -554,31 +438,12 @@ function normalizeXrayTimeline(weather: SpaceWeatherSnapshot | null) {
     .sort((left, right) => left.t.localeCompare(right.t));
 }
 
-function normalizeKasaKindexTimeline(weather: SpaceWeatherSnapshot | null) {
-  const kindex = weather?.kasa?.kindex;
-  const rows = kindex?.series?.length
-    ? kindex.series
-    : kindex?.observedAt
-      ? [{ t: kindex.observedAt, kp: kindex.currentKp, kk: kindex.currentKk }]
-      : [];
-  return rows
-    .map((row) => ({ t: normalizeTimestamp(row.t), kp: normalizeNullableNumber(row.kp), kk: normalizeNullableNumber(row.kk) }))
-    .filter((row) => row.t && (row.kp !== null || row.kk !== null))
-    .sort((left, right) => left.t.localeCompare(right.t));
-}
-
 function normalizeTimestamp(value: unknown) {
   if (!value) return '';
   const compact = String(value).trim().replace(' ', 'T');
   const withZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(compact) ? compact : `${compact}Z`;
   const parsed = new Date(withZone);
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : '';
-}
-
-function normalizeNullableNumber(value: unknown) {
-  if (value === null || value === undefined || value === '') return null;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
 }
 
 function latestPoint<T extends { t: string }>(points: T[], nowMs: number) {

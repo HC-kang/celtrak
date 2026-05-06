@@ -229,46 +229,7 @@ export interface SpaceWeatherSnapshot extends TimestampedOrigin {
       g?: NoaaScaleSummary;
     };
   };
-  kasa?: KasaSpaceWeatherSupplement;
   notices?: Array<{ issuedAt: string; type: string; text: string }>;
-}
-
-export interface KasaSpaceWeatherSupplement {
-  fetchedAt: string;
-  stale?: boolean;
-  warn?: {
-    lastUpdate?: string;
-    r: KasaScaleWindow;
-    s: KasaScaleWindow;
-    g: KasaScaleWindow;
-  };
-  prob?: {
-    issuedAt?: string;
-    r: KasaProbabilityWindow[];
-    s: KasaProbabilityWindow[];
-    g: KasaProbabilityWindow[];
-  };
-  kindex?: {
-    observedAt?: string;
-    currentKp: number | null;
-    currentKk: number | null;
-    max24Kp: number | null;
-    max24Kk: number | null;
-    series: Array<{ t: string; kp: number | null; kk: number | null }>;
-  };
-}
-
-export interface KasaScaleWindow {
-  current: string | null;
-  previous24: string | null;
-  previous48: string | null;
-}
-
-export interface KasaProbabilityWindow {
-  startHour: number;
-  endHour: number;
-  minorPct: number | null;
-  majorPct: number | null;
 }
 
 export interface NoaaScaleSummary {

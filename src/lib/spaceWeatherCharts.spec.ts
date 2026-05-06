@@ -2,12 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { SpaceWeatherSnapshot } from '@/domain/types';
 import {
   buildMetricSummaries,
-  buildWeatherDashboardModel,
   buildWeatherChartModel,
   classifyGeomagneticScale,
   classifyRadiationStormScale,
   classifyRadioBlackoutScale,
-  findNearestDashboardReadout,
   findNearestReadout,
 } from './spaceWeatherCharts';
 
@@ -49,44 +47,6 @@ const baseWeather: SpaceWeatherSnapshot = {
     previous: {
       t: '2026-05-04T16:09:00.000Z',
       g: { scale: 2, label: 'G2', text: 'moderate', observedAt: '2026-05-04T16:09:00.000Z', source: 'NOAA_SWPC' },
-    },
-  },
-  kasa: {
-    fetchedAt: '2026-05-05T16:09:00.000Z',
-    warn: {
-      lastUpdate: '2026-05-05T16:09:00.000Z',
-      r: { current: 'R0', previous24: 'R0', previous48: 'R1' },
-      s: { current: 'S0', previous24: 'S0', previous48: 'S0' },
-      g: { current: 'G0', previous24: 'G0', previous48: 'G2' },
-    },
-    prob: {
-      issuedAt: '2026-05-05T01:52:14.000Z',
-      r: [
-        { startHour: 0, endHour: 24, minorPct: 30, majorPct: 1 },
-        { startHour: 24, endHour: 48, minorPct: 30, majorPct: 1 },
-        { startHour: 48, endHour: 72, minorPct: 30, majorPct: 1 },
-      ],
-      s: [
-        { startHour: 0, endHour: 24, minorPct: 1, majorPct: 1 },
-        { startHour: 24, endHour: 48, minorPct: 1, majorPct: 1 },
-        { startHour: 48, endHour: 72, minorPct: 1, majorPct: 1 },
-      ],
-      g: [
-        { startHour: 0, endHour: 24, minorPct: 30, majorPct: 1 },
-        { startHour: 24, endHour: 48, minorPct: 10, majorPct: 1 },
-        { startHour: 48, endHour: 72, minorPct: 30, majorPct: 1 },
-      ],
-    },
-    kindex: {
-      observedAt: '2026-05-05T15:00:00.000Z',
-      currentKp: 6,
-      currentKk: 3,
-      max24Kp: 6,
-      max24Kk: 3,
-      series: [
-        { t: '2026-05-05T12:00:00Z', kp: 2, kk: 1 },
-        { t: '2026-05-05T15:00:00Z', kp: 6, kk: 3 },
-      ],
     },
   },
 };
@@ -145,20 +105,5 @@ describe('space weather chart transforms', () => {
     const model = buildWeatherChartModel(weather, 'geomagnetic', new Date('2026-05-05T16:50:00Z').getTime());
     expect(model.currentReadout?.t).toBe('2026-05-05T15:00:00.000Z');
     expect(model.currentReadout?.rows[0]?.value).toBe('Kp 6');
-  });
-
-  it('builds a linked dashboard with all four weather panels', () => {
-    const dashboard = buildWeatherDashboardModel(baseWeather, new Date('2026-05-05T16:00:00Z').getTime());
-    expect(dashboard.panels.map((panel) => panel.mode)).toEqual(['geomagnetic', 'radiation', 'ionosphere', 'kasa']);
-    expect(dashboard.panels.at(-1)?.series.map((series) => series.name)).toEqual(['Kk index', 'KASA Kp reference']);
-    expect(dashboard.panels[1].thresholds.map((item) => item.label)).toEqual(['S1', 'S2', 'S3', 'S4', 'S5']);
-  });
-
-  it('returns a same-time dashboard readout across panels', () => {
-    const dashboard = buildWeatherDashboardModel(baseWeather, new Date('2026-05-05T16:00:00Z').getTime());
-    const readout = findNearestDashboardReadout(dashboard, new Date('2026-05-05T15:30:00Z').getTime());
-    expect(readout?.t).toBe('2026-05-05T15:30:00.000Z');
-    expect(readout?.rows.map((row) => row.panelTitle)).toContain('Geomagnetic');
-    expect(readout?.rows.map((row) => row.panelTitle)).toContain('KASA K-index');
   });
 });
