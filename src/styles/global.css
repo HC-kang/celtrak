@@ -3967,6 +3967,19 @@ button.focus-inspector__chip:disabled {
   padding: 16px;
 }
 
+.event-timeline__title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.event-timeline__badge {
+  min-height: 22px;
+  padding: 4px 7px;
+  font-size: 0.64rem;
+}
+
 .event-timeline__item p {
   margin: 4px 0 0;
   color: var(--body-gray);

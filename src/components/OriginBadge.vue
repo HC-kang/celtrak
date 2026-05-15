@@ -11,10 +11,14 @@ const props = defineProps<{
 }>();
 
 const meta = computed(() => getOriginBadge(props.stale ? 'STALE' : props.origin));
+const tooltip = computed(() => {
+  const timestamp = props.timestamp ? ` Timestamp: ${formatTimestamp(props.timestamp)}.` : '';
+  return `${meta.value.tooltip}${timestamp}`;
+});
 </script>
 
 <template>
-  <div class="origin-badge" :class="[meta.className, timestamp ? 'origin-badge--with-time' : 'origin-badge--compact']">
+  <div class="origin-badge" :class="[meta.className, timestamp ? 'origin-badge--with-time' : 'origin-badge--compact']" :title="tooltip">
     <span class="origin-badge__mark" aria-hidden="true">{{ meta.icon }}</span>
     <span class="origin-badge__label">{{ meta.label }}</span>
     <time v-if="timestamp" class="origin-badge__time" :datetime="timestamp">{{ formatTimestamp(timestamp) }}</time>

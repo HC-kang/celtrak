@@ -323,7 +323,7 @@ export const useAppStore = defineStore('app', () => {
       return addCatalogToFleet(existing, fleetId);
     }
     const [entry] = await gateway.getCatalogStrict({ catalogNumbers: [catalogNumber] }, { timeoutMs: 15_000 });
-    if (!entry) throw new Error(`CelesTrak에서 NORAD ${catalogNumber}의 TLE/SATCAT을 찾지 못했습니다.`);
+    if (!entry) throw new Error(`Public catalog snapshot에서 NORAD ${catalogNumber}의 TLE/SATCAT을 찾지 못했습니다.`);
     return addCatalogToFleet(entry, fleetId);
   }
 
@@ -789,7 +789,7 @@ function createSeedEvents(): ScheduledEvent[] {
       endAt: new Date(base + 7 * 60 * 60 * 1000).toISOString(),
       kind: 'MAINTENANCE',
       title: 'Crew comm window',
-      notes: 'High priority voice and telemetry pass planning.',
+      notes: 'Sample schedule item for voice and telemetry pass planning.',
       schemaVersion: 1,
     },
     {
@@ -799,7 +799,7 @@ function createSeedEvents(): ScheduledEvent[] {
       endAt: new Date(base + 18 * 60 * 60 * 1000).toISOString(),
       kind: 'SW_UPDATE',
       title: 'Payload timing parameter review',
-      notes: 'User-defined maintenance timeline.',
+      notes: 'Sample user-defined maintenance timeline.',
       schemaVersion: 1,
     },
   ];

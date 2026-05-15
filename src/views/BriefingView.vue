@@ -15,7 +15,7 @@ import { usePassPredictions } from '@/composables/usePassPredictions';
 import { buildLiveContactLinks } from '@/lib/contactLinks';
 import type { ContactPrecisionCandidate, ContactPrecisionResult, ContactPrecisionWorkerResult } from '@/lib/contactPrecision';
 import { classifyConjunctionSeverity, conjunctionSeverityRank } from '@/lib/conjunctionRisk';
-import { elevationMaskSourceLabel, withUserElevationMaskSource } from '@/lib/groundStationElevation';
+import { elevationMaskSourceDetail, elevationMaskSourceLabel, withUserElevationMaskSource } from '@/lib/groundStationElevation';
 import type { CatalogEntry, ConjunctionRecord, FleetMemberRef, GroundStation, LiveContactLink, MapFocusTarget, NoaaScaleSummary } from '@/domain/types';
 
 const OrbitGlobe3D = defineAsyncComponent(() => import('@/components/OrbitGlobe3D.vue'));
@@ -211,7 +211,7 @@ const trackedObjects = computed<TrackedObjectSummary[]>(() =>
         ref: member,
         name: member.displayName ?? entry?.satcat.objectName ?? `NORAD ${member.catalogNumber}`,
         detail: entry ? `NORAD ${entry.satcat.catalogNumber} · ${entry.group} · ${entry.satcat.ownerCountry}` : `NORAD ${member.catalogNumber} · catalog resolving`,
-        sourceDetail: entry?.tle ? 'CelesTrak GP TLE' : 'CelesTrak SATCAT only',
+        sourceDetail: entry?.tle ? 'Public GP TLE' : 'Public SATCAT only',
         trustTier: trustTierForCatalog(freshness),
         trustTone: trustToneForFreshness(freshness),
         freshness,
@@ -373,7 +373,7 @@ const staleTrackedObjects = computed(() =>
 const trustOverview = computed(() => [
   {
     label: 'Catalog GP',
-    sourceDetail: 'CelesTrak GP / SATCAT',
+    sourceDetail: 'Public GP / SATCAT',
     trustTier: staleTrackedObjects.value.length ? 'Stale public source' : 'Public source',
     tone: staleTrackedObjects.value.length ? 'warn' : 'good',
     detail: staleTrackedObjects.value.length
@@ -382,7 +382,7 @@ const trustOverview = computed(() => [
   },
   {
     label: 'Screening',
-    sourceDetail: 'CelesTrak SOCRATES',
+    sourceDetail: 'SOCRATES public screening',
     trustTier: staleCdmRecords.value.length ? 'Stale public source' : 'Public screening',
     tone: staleCdmRecords.value.length ? 'warn' : cdmScopeConjunctions.value.length ? 'warn' : 'info',
     detail: cdmOverviewDetail(),
@@ -542,7 +542,7 @@ const todayWatch = computed<ActionSignal[]>(() => {
       detail: cdmFallbackDetail(staleCdm),
       time: staleCdm.fetchedAt ? formatTimestamp(staleCdm.fetchedAt) : 'Fallback',
       tone: 'warn',
-      sourceDetail: 'CelesTrak SOCRATES screening',
+      sourceDetail: 'SOCRATES public screening',
       trustTier: 'Stale public source',
       actionLabel: 'View evidence',
       action: () => openEvidence(buildConjunctionEvidence(staleCdm)),
@@ -558,7 +558,7 @@ const todayWatch = computed<ActionSignal[]>(() => {
       detail: `${item.missDistanceKm.toFixed(2)} km miss · public SOCRATES signal`,
       time: formatOrbitRelative(item.tca),
       tone: severity,
-      sourceDetail: 'CelesTrak SOCRATES screening',
+      sourceDetail: 'SOCRATES public screening',
       trustTier: 'Public screening',
       actionLabel: 'Review signal',
       action: () => openEvidence(buildConjunctionEvidence(item)),
@@ -642,7 +642,7 @@ const intelQueue = computed<ActionSignal[]>(() => {
       detail: cdmFallbackDetail(item),
       time: item.fetchedAt ? formatTimestamp(item.fetchedAt) : 'Fallback',
       tone: 'warn' as Tone,
-      sourceDetail: 'CelesTrak SOCRATES screening',
+      sourceDetail: 'SOCRATES public screening',
       trustTier: 'Stale public source',
       actionLabel: 'View evidence',
       action: () => openEvidence(buildConjunctionEvidence(item)),
@@ -654,7 +654,7 @@ const intelQueue = computed<ActionSignal[]>(() => {
       detail: `${item.missDistanceKm.toFixed(2)} km miss · public SOCRATES signal`,
       time: formatOrbitRelative(item.tca),
       tone: cdmSeverity(item),
-      sourceDetail: 'CelesTrak SOCRATES screening',
+      sourceDetail: 'SOCRATES public screening',
       trustTier: 'Public screening',
       actionLabel: 'Evidence',
       action: () => openEvidence(buildConjunctionEvidence(item)),
@@ -666,7 +666,7 @@ const intelQueue = computed<ActionSignal[]>(() => {
       detail: `${item.confidence} confidence · ${item.intersectsSelectedFleet ? 'selected fleet' : 'catalog only'}`,
       time: formatRelative(item.predictedDecayAt),
       tone: item.intersectsSelectedFleet ? 'warn' : 'info',
-      sourceDetail: 'CelesTrak decay feed',
+      sourceDetail: 'Public decay feed',
       trustTier: store.offline ? 'Stale public source' : 'Public source',
       actionLabel: 'Evidence',
       action: () => openEvidence(buildDecayEvidence(item)),
@@ -855,6 +855,29 @@ function sourceClass(tone: Tone | FreshnessState) {
   return `source-chip--${tone}`;
 }
 
+function sourceTooltip(label: string, detail?: string) {
+  const normalized = label.toLowerCase();
+  if (normalized.includes('derived') || normalized.includes('tle')) {
+    return `${label}: TLE 기반 자동 계산입니다. 실제 지상국 예약이나 운용자 확정 정보가 아닙니다.`;
+  }
+  if (normalized.includes('public screening') || normalized.includes('socrates')) {
+    return `${label}: 공개 근접접근 screening 신호입니다. 공식 충돌회피 권고나 maneuver recommendation이 아닙니다.`;
+  }
+  if (normalized.includes('stale') || normalized.includes('fallback')) {
+    return `${label}: 원천 데이터가 오래되었거나 fallback cache에서 제공된 값입니다. 마지막 갱신 시각을 확인하세요.`;
+  }
+  if (normalized.includes('user')) {
+    return `${label}: 사용자 입력 또는 로컬 workspace 데이터입니다. Celtrak이 외부 검증하지 않습니다.`;
+  }
+  if (normalized.includes('noaa') || normalized.includes('swpc')) {
+    return `${label}: NOAA SWPC 공개 우주기상 데이터입니다.`;
+  }
+  if (normalized.includes('public')) {
+    return `${label}: 공개 원천 데이터입니다. Celtrak freshness 상태와 evidence를 함께 확인하세요.`;
+  }
+  return detail ? `${label}: ${detail}` : label;
+}
+
 function satnogsSatelliteUrl(catalogNumber: number) {
   return `https://db.satnogs.org/satellite/${catalogNumber}/`;
 }
@@ -882,8 +905,8 @@ function buildCatalogEvidence(item: TrackedObjectSummary): EvidenceDrawer {
     rawLines: item.entry?.tle ? [item.entry.tle.line0 ?? item.name, item.entry.tle.line1, item.entry.tle.line2] : undefined,
     links: catalogNumber
       ? [
-          { label: 'CelesTrak GP', href: `https://celestrak.org/NORAD/elements/gp.php?CATNR=${catalogNumber}&FORMAT=tle` },
-          { label: 'CelesTrak SATCAT', href: `https://celestrak.org/satcat/records.php?CATNR=${catalogNumber}&FORMAT=JSON` },
+          { label: 'Public GP TLE', href: `https://celestrak.org/NORAD/elements/gp.php?CATNR=${catalogNumber}&FORMAT=tle` },
+          { label: 'Public SATCAT', href: `https://celestrak.org/satcat/records.php?CATNR=${catalogNumber}&FORMAT=JSON` },
           { label: 'SatNOGS public reference', href: satnogsSatelliteUrl(catalogNumber) },
         ]
       : undefined,
@@ -895,7 +918,7 @@ function buildConjunctionEvidence(item: ConjunctionRecord): EvidenceDrawer {
   return {
     title: `${item.primary.name} x ${item.secondary.name}`,
     subtitle: isStaleConjunction(item) ? 'Stale public screening fallback' : 'Public conjunction screening signal',
-    sourceDetail: isStaleConjunction(item) ? 'CelesTrak SOCRATES fallback' : 'CelesTrak SOCRATES screening',
+    sourceDetail: isStaleConjunction(item) ? 'SOCRATES stale fallback' : 'SOCRATES public screening',
     trustTier: isStaleConjunction(item) || store.offline ? 'Stale public source' : 'Public screening',
     tone: cdmEvidenceTone(item),
     rows: [
@@ -908,13 +931,13 @@ function buildConjunctionEvidence(item: ConjunctionRecord): EvidenceDrawer {
       { label: 'Relative velocity', value: `${item.relVelocityKmS.toFixed(2)} km/s` },
       { label: 'Pc', value: item.pc !== undefined ? item.pc.toExponential(2) : 'Not published' },
       { label: 'Celtrak snapshot', value: formatTimestamp(item.snapshotCompletedAt ?? item.fetchedAt) },
-      ...(item.sourceLastModified ? [{ label: 'CelesTrak Last-Modified', value: formatTimestamp(item.sourceLastModified) }] : []),
+      ...(item.sourceLastModified ? [{ label: 'Source Last-Modified', value: formatTimestamp(item.sourceLastModified) }] : []),
       { label: 'Source', value: item.source },
       ...(item.note ? [{ label: 'Fallback note', value: item.note }] : []),
     ],
-    links: [{ label: 'CelesTrak SOCRATES', href: 'https://celestrak.org/SOCRATES/' }],
+    links: [{ label: 'SOCRATES source', href: 'https://celestrak.org/SOCRATES/' }],
     note: isStaleConjunction(item)
-      ? 'This row is a stale fallback because Celtrak could not fetch the live CelesTrak SOCRATES file. Do not treat it as a current screening result.'
+      ? 'This row is a stale fallback because Celtrak could not fetch the live SOCRATES source file. Do not treat it as a current screening result.'
       : 'SOCRATES is treated as a public screening signal. Operator-confirmed collision-avoidance data is not available, so this is not a maneuver recommendation.',
   };
 }
@@ -1044,7 +1067,7 @@ function buildDecayEvidence(item: { catalogNumber: number; name: string; predict
   return {
     title: item.name,
     subtitle: 'Public decay forecast',
-    sourceDetail: 'CelesTrak decay feed',
+    sourceDetail: 'Public decay feed',
     trustTier: store.offline ? 'Stale public source' : 'Public source',
     tone: item.intersectsSelectedFleet ? 'warn' : 'info',
     rows: [
@@ -1054,7 +1077,7 @@ function buildDecayEvidence(item: { catalogNumber: number; name: string; predict
       { label: 'Source', value: item.source },
       { label: 'Fetched at', value: formatTimestamp(item.fetchedAt) },
     ],
-    links: [{ label: 'CelesTrak decay', href: 'https://celestrak.org/NORAD/elements/decay/' }],
+    links: [{ label: 'Public decay source', href: 'https://celestrak.org/NORAD/elements/decay/' }],
     note: 'Decay forecasts are OSINT signals and should be read as public monitoring context.',
   };
 }
@@ -1317,7 +1340,7 @@ async function activateConjunctionObject(item: ConjunctionRecord['primary']) {
       name: item.name,
       state: 'error',
       message: `${item.name} 추적 추가를 할 수 없습니다.`,
-      detail: `SOCRATES CDM에는 위험 객체로 보고됐지만 CelesTrak catalog/TLE 식별자가 공개되지 않아 지도 추적에 추가할 수 없습니다.`,
+      detail: `SOCRATES CDM에는 위험 객체로 보고됐지만 public catalog/TLE 식별자가 공개되지 않아 지도 추적에 추가할 수 없습니다.`,
       retryable: false,
     });
     return;
@@ -1884,8 +1907,8 @@ watch(
             </button>
           </header>
           <div class="evidence-drawer__trust">
-            <span class="source-chip" :class="sourceClass(evidenceDrawer.tone)">{{ evidenceDrawer.trustTier }}</span>
-            <span class="source-chip source-chip--neutral">{{ evidenceDrawer.sourceDetail }}</span>
+            <span class="source-chip" :class="sourceClass(evidenceDrawer.tone)" :title="sourceTooltip(evidenceDrawer.trustTier, evidenceDrawer.sourceDetail)">{{ evidenceDrawer.trustTier }}</span>
+            <span class="source-chip source-chip--neutral" :title="sourceTooltip(evidenceDrawer.sourceDetail)">{{ evidenceDrawer.sourceDetail }}</span>
           </div>
           <dl class="evidence-drawer__rows">
             <div v-for="row in evidenceDrawer.rows" :key="row.label">
@@ -1935,7 +1958,13 @@ watch(
       </div>
 
       <section class="trust-strip" aria-label="Data trust overview">
-        <article v-for="item in trustOverview" :key="item.label" class="trust-strip__item" :class="`trust-strip__item--${item.tone}`">
+        <article
+          v-for="item in trustOverview"
+          :key="item.label"
+          class="trust-strip__item"
+          :class="`trust-strip__item--${item.tone}`"
+          :title="sourceTooltip(item.trustTier, item.sourceDetail)"
+        >
           <span>{{ item.label }}</span>
           <strong>{{ item.trustTier }}</strong>
           <p>{{ item.sourceDetail }} · {{ item.detail }}</p>
@@ -1967,8 +1996,8 @@ watch(
               <strong>{{ item.title }}</strong>
               <p>{{ item.detail }}</p>
               <div class="source-row">
-                <span class="source-chip" :class="sourceClass(item.tone)">{{ item.trustTier }}</span>
-                <span class="source-chip source-chip--neutral">{{ item.sourceDetail }}</span>
+                <span class="source-chip" :class="sourceClass(item.tone)" :title="sourceTooltip(item.trustTier, item.sourceDetail)">{{ item.trustTier }}</span>
+                <span class="source-chip source-chip--neutral" :title="sourceTooltip(item.sourceDetail)">{{ item.sourceDetail }}</span>
               </div>
             </div>
             <div class="today-watch__actions">
@@ -2128,8 +2157,8 @@ watch(
                 <strong>{{ focusedSatellite.member.displayName ?? focusedSatellite.entry.satcat.objectName }}</strong>
                 <p>NORAD {{ focusedSatellite.entry.satcat.catalogNumber }} · {{ focusedSatellite.entry.group }}</p>
                 <div v-if="focusedObjectSummary" class="source-row">
-                  <span class="source-chip" :class="sourceClass(focusedObjectSummary.freshness.tone)">{{ focusedObjectSummary.freshness.label }}</span>
-                  <span class="source-chip" :class="sourceClass(focusedObjectSummary.trustTone)">{{ focusedObjectSummary.trustTier }}</span>
+                  <span class="source-chip" :class="sourceClass(focusedObjectSummary.freshness.tone)" :title="focusedObjectSummary.freshness.detail">{{ focusedObjectSummary.freshness.label }}</span>
+                  <span class="source-chip" :class="sourceClass(focusedObjectSummary.trustTone)" :title="sourceTooltip(focusedObjectSummary.trustTier, focusedObjectSummary.sourceDetail)">{{ focusedObjectSummary.trustTier }}</span>
                 </div>
               </div>
               <div class="focus-inspector__actions">
@@ -2176,7 +2205,7 @@ watch(
                     @change="updateStationMask(focusedStation, ($event.target as HTMLInputElement).value)"
                   />
                 </label>
-                <small class="focus-inspector__source">
+                <small class="focus-inspector__source" :title="elevationMaskSourceDetail(focusedStation.elevationMaskSource)">
                   {{ elevationMaskSourceLabel(focusedStation.elevationMaskSource) }} elevation mask
                 </small>
               </div>
@@ -2246,7 +2275,7 @@ watch(
                   </div>
                   <p>{{ linkStatusLabel(link) }} · el {{ link.elevationDeg.toFixed(1) }}° · az {{ link.azimuthDeg.toFixed(0) }}°</p>
                   <div class="source-row source-row--compact">
-                    <span class="source-chip source-chip--info">Derived estimate</span>
+                    <span class="source-chip source-chip--info" :title="sourceTooltip('Derived estimate', 'Derived from TLE')">Derived estimate</span>
                     <button class="source-link" type="button" @click="openEvidence(buildPassEvidence(link))">View evidence</button>
                   </div>
                 </div>
@@ -2305,7 +2334,7 @@ watch(
                     </div>
                     <p>{{ formatOrbitRelative(item.tca) }}</p>
                     <div class="source-row source-row--compact">
-                      <span class="source-chip" :class="cdmSourceChipClass(item)">{{ cdmSourceChipLabel(item) }}</span>
+                      <span class="source-chip" :class="cdmSourceChipClass(item)" :title="sourceTooltip(cdmSourceChipLabel(item), 'SOCRATES public screening')">{{ cdmSourceChipLabel(item) }}</span>
                       <button class="source-link" type="button" @click="openEvidence(buildConjunctionEvidence(item))">View evidence</button>
                     </div>
                   </div>
@@ -2371,7 +2400,7 @@ watch(
                     />
                     <span>
                       <strong>{{ station.name }}</strong>
-                      <small>
+                      <small :title="elevationMaskSourceDetail(station.elevationMaskSource)">
                         {{ station.latDeg.toFixed(2) }}, {{ station.lonDeg.toFixed(2) }} · {{ station.elevationMaskDeg }}° mask ·
                         {{ elevationMaskSourceLabel(station.elevationMaskSource) }}
                       </small>
@@ -2422,10 +2451,10 @@ watch(
                     <strong>{{ item.name }}</strong>
                     <p>{{ item.hidden ? `${item.detail} · briefing 표시 숨김` : item.detail }}</p>
                     <div class="tracking-scope__object-meta">
-                      <span :class="sourceClass(item.freshness.tone)">{{ item.freshness.label }}</span>
-                      <span :class="sourceClass(item.nextContactTone)">{{ item.nextContactLabel }}</span>
-                      <span :class="sourceClass(item.riskLabel.includes('No current') ? 'info' : 'warn')">{{ item.riskLabel }}</span>
-                      <span :class="sourceClass(item.anomalyCount ? 'warn' : 'info')">{{ item.latestStatusLabel }}{{ item.anomalyCount ? ` · ${item.anomalyCount} open` : '' }}</span>
+                      <span :class="sourceClass(item.freshness.tone)" :title="item.freshness.detail">{{ item.freshness.label }}</span>
+                      <span :class="sourceClass(item.nextContactTone)" :title="sourceTooltip(item.nextContactLabel, 'Derived contact context')">{{ item.nextContactLabel }}</span>
+                      <span :class="sourceClass(item.riskLabel.includes('No current') ? 'info' : 'warn')" :title="sourceTooltip(item.riskLabel, item.sourceDetail)">{{ item.riskLabel }}</span>
+                      <span :class="sourceClass(item.anomalyCount ? 'warn' : 'info')" :title="sourceTooltip(item.latestStatusLabel, 'User readiness layer')">{{ item.latestStatusLabel }}{{ item.anomalyCount ? ` · ${item.anomalyCount} open` : '' }}</span>
                     </div>
                   </div>
                   <div class="tracking-scope__object-actions">
@@ -2479,8 +2508,8 @@ watch(
             <strong>{{ item.title }}</strong>
             <p>{{ item.detail }}</p>
             <div class="source-row source-row--light">
-              <span class="source-chip" :class="sourceClass(item.tone)">{{ item.trustTier }}</span>
-              <span class="source-chip source-chip--neutral">{{ item.sourceDetail }}</span>
+              <span class="source-chip" :class="sourceClass(item.tone)" :title="sourceTooltip(item.trustTier, item.sourceDetail)">{{ item.trustTier }}</span>
+              <span class="source-chip source-chip--neutral" :title="sourceTooltip(item.sourceDetail)">{{ item.sourceDetail }}</span>
             </div>
           </div>
           <div class="war-room__feed-actions">
@@ -2511,7 +2540,7 @@ watch(
 
     <PanelCard ref="operatorReadinessPanelRef" title="Operator Readiness" subtitle="USER-entered mission status">
       <template #actions>
-        <span class="source-chip source-chip--info panel-card__action-link">User supplied</span>
+        <span class="source-chip source-chip--info panel-card__action-link" :title="sourceTooltip('User supplied')">User supplied</span>
         <OriginBadge v-if="store.fleetHealth.latestRecordedAt" origin="USER" :timestamp="store.fleetHealth.latestRecordedAt" />
       </template>
       <div class="metric-grid">
@@ -2549,7 +2578,7 @@ watch(
     <PanelCard ref="spaceWeatherPanelRef" class="panel-card--stack-actions" title="Space Weather" subtitle="OSINT environmental risk">
       <template #actions>
         <button class="button button--ghost panel-card__action-link" type="button" @click="openEvidence(buildWeatherEvidence())">Evidence</button>
-        <span class="source-chip source-chip--info panel-card__action-link">NOAA SWPC</span>
+        <span class="source-chip source-chip--info panel-card__action-link" :title="sourceTooltip('NOAA SWPC')">NOAA SWPC</span>
         <OriginBadge v-if="store.weather?.fetchedAt" origin="OSINT" :timestamp="store.weather.fetchedAt" />
       </template>
       <div class="metric-grid">
@@ -2566,10 +2595,10 @@ watch(
       class="panel-card--conjunction-match panel-card--stack-actions"
       :style="conjunctionPanelStyle"
       title="Public Conjunction Signals"
-      subtitle="CelesTrak SOCRATES screening"
+      subtitle="SOCRATES public screening"
     >
       <template #actions>
-        <span class="source-chip source-chip--warn panel-card__action-link">Public screening</span>
+        <span class="source-chip source-chip--warn panel-card__action-link" :title="sourceTooltip('Public screening', 'SOCRATES public screening')">Public screening</span>
         <OriginBadge v-if="cdmScopeConjunctions[0]?.fetchedAt" origin="OSINT" :timestamp="cdmScopeConjunctions[0].fetchedAt" :stale="store.offline || staleCdmRecords.length > 0" />
       </template>
       <div class="tracking-scope__tabs cdm-scope__tabs" role="tablist" aria-label="CDM scope">
@@ -2616,7 +2645,7 @@ watch(
 
     <PanelCard ref="upcomingPassesPanelRef" title="Upcoming Passes" subtitle="Derived contact windows">
       <template #actions>
-        <span class="source-chip source-chip--info panel-card__action-link">Derived from TLE</span>
+        <span class="source-chip source-chip--info panel-card__action-link" :title="sourceTooltip('Derived from TLE')">Derived from TLE</span>
         <OriginBadge v-if="store.passPredictions[0]?.computedAt" origin="DERIVED" :timestamp="store.passPredictions[0].computedAt" />
       </template>
       <PassList :passes="store.passPredictions.slice(0, 5)" :station-lookup="stationLookup" />

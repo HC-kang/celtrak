@@ -8,6 +8,7 @@ const SOURCE_LABELS: Record<ElevationMaskSourceConfidence, string> = {
 };
 
 export function elevationMaskSourceLabel(source: GroundStationElevationMaskSource | undefined) {
+  if (source?.label.toLowerCase().includes('sample')) return 'Sample';
   return SOURCE_LABELS[source?.confidence ?? 'default'];
 }
 
