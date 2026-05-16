@@ -795,6 +795,7 @@ textarea:focus-visible {
 }
 
 .source-chip.panel-card__action-link {
+  flex: 0 0 auto;
   color: var(--body-gray);
   background: rgba(255, 255, 255, 0.05);
 }
@@ -1525,18 +1526,22 @@ textarea:focus-visible {
 
 .war-room__toolbar .simulation-controls__buttons {
   display: grid;
-  grid-template-columns: repeat(10, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
   gap: 6px;
 }
 
 .war-room__toolbar .simulation-controls__speed {
+  grid-template-columns: auto auto minmax(96px, 1fr) auto;
+  gap: 6px 8px;
   min-height: 40px;
 }
 
 .war-room__toolbar .simulation-controls__buttons .button {
+  min-width: 0;
   min-height: 32px;
-  padding: 6px 8px;
-  font-size: 0.78rem;
+  padding: 6px 7px;
+  font-size: 0.74rem;
+  white-space: nowrap;
 }
 
 .war-room__toolbar .simulation-controls__picker .input {
@@ -2475,6 +2480,20 @@ button.focus-inspector__chip:disabled {
   grid-template-columns: repeat(12, minmax(0, 1fr));
 }
 
+.briefing-grid .panel-card h2 {
+  font-size: clamp(1.12rem, 1.35vw, 1.55rem);
+  overflow-wrap: normal;
+}
+
+.briefing-grid .panel-card__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.briefing-grid .panel-card__actions {
+  justify-content: flex-start;
+}
+
 .briefing-grid > * {
   grid-column: span 12;
 }
@@ -2862,7 +2881,7 @@ button.focus-inspector__chip:disabled {
 }
 
 .weather-metric-pill small {
-  display: block;
+  display: -webkit-box;
   overflow: hidden;
   color: var(--body-gray);
   font-size: 0.72rem;
@@ -2870,7 +2889,9 @@ button.focus-inspector__chip:disabled {
   line-height: 1.25;
   text-overflow: ellipsis;
   text-transform: uppercase;
-  white-space: nowrap;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .weather-metric-pill strong {
@@ -3235,6 +3256,16 @@ button.focus-inspector__chip:disabled {
   gap: 10px;
 }
 
+.station-ops .panel-card__header,
+.station-ops .panel-card__body {
+  padding: clamp(16px, 1.6vw, 22px);
+}
+
+.station-ops .panel-card h2 {
+  font-size: clamp(1.35rem, 1.45vw, 1.75rem);
+  font-weight: 400;
+}
+
 .station-ops__visible-table {
   max-height: min(920px, 72vh);
   overflow: auto;
@@ -3332,14 +3363,43 @@ button.focus-inspector__chip:disabled {
 }
 
 .station-ops__scanner {
-  justify-content: flex-start;
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) auto auto;
+  align-items: end;
+  justify-content: stretch;
+  gap: 12px;
   margin-bottom: 12px;
 }
 
 .station-ops__scanner > div {
   display: grid;
   gap: 6px;
-  min-width: min(340px, 100%);
+  min-width: 0;
+}
+
+.station-ops__scanner .button,
+.station-ops__scanner .button--ghost {
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+.station-ops__scanner-copy {
+  max-width: 92ch;
+  margin: 14px 0 0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.toolbar.toolbar--segmented {
+  width: min(100%, 520px);
+  grid-template-columns: repeat(2, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.toolbar--segmented .button,
+.toolbar--segmented .button--ghost {
+  min-height: 40px;
+  padding-inline: 18px;
 }
 
 .station-ops__owner {
@@ -3521,6 +3581,143 @@ button.focus-inspector__chip:disabled {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
     0 0 0 3px rgba(0, 112, 204, 0.22);
+}
+
+.button--danger {
+  color: #8f1232;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 241, 244, 0.9)),
+    rgba(255, 245, 247, 0.92);
+  border-color: rgba(200, 27, 58, 0.32);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 8px 18px rgba(200, 27, 58, 0.1);
+}
+
+.button--danger:hover {
+  color: var(--surface);
+  border-color: rgba(200, 27, 58, 0.62);
+  background:
+    linear-gradient(135deg, rgba(230, 68, 96, 0.7), rgba(200, 27, 58, 0.96)),
+    #c81b3a;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 0 0 3px rgba(200, 27, 58, 0.16);
+}
+
+.confirm-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.confirm-dialog__backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background:
+    linear-gradient(180deg, rgba(8, 13, 24, 0.64), rgba(8, 13, 24, 0.78)),
+    rgba(8, 13, 24, 0.72);
+  backdrop-filter: blur(10px);
+}
+
+.confirm-dialog__panel {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 440px);
+  display: grid;
+  gap: 16px;
+  padding: 24px;
+  color: var(--ink);
+  border-radius: var(--radius-xl);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(244, 247, 252, 0.96)),
+    var(--surface);
+  border: 1px solid rgba(0, 112, 204, 0.16);
+  box-shadow:
+    0 28px 80px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.confirm-dialog__panel--danger {
+  border-color: rgba(200, 27, 58, 0.22);
+}
+
+.confirm-dialog__header {
+  display: grid;
+  gap: 6px;
+}
+
+.confirm-dialog__header .eyebrow {
+  color: var(--body-gray);
+}
+
+.confirm-dialog__header h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.35rem;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.confirm-dialog__message,
+.confirm-dialog__detail {
+  margin: 0;
+  color: var(--body-gray);
+  line-height: 1.55;
+}
+
+.confirm-dialog__message {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.confirm-dialog__detail {
+  padding: 12px 14px;
+  font-size: 0.9rem;
+  border-radius: var(--radius-md);
+  background: rgba(0, 112, 204, 0.07);
+  border: 1px solid rgba(0, 112, 204, 0.12);
+}
+
+.confirm-dialog__panel--danger .confirm-dialog__detail {
+  background: rgba(200, 27, 58, 0.07);
+  border-color: rgba(200, 27, 58, 0.14);
+}
+
+.confirm-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.confirm-dialog-fade-enter-active,
+.confirm-dialog-fade-leave-active {
+  transition: opacity 160ms ease;
+}
+
+.confirm-dialog-fade-enter-active .confirm-dialog__panel,
+.confirm-dialog-fade-leave-active .confirm-dialog__panel {
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.confirm-dialog-fade-enter-from,
+.confirm-dialog-fade-leave-to {
+  opacity: 0;
+}
+
+.confirm-dialog-fade-enter-from .confirm-dialog__panel,
+.confirm-dialog-fade-leave-to .confirm-dialog__panel {
+  opacity: 0;
+  transform: translateY(10px) scale(0.98);
 }
 
 .war-room .button--ghost,
@@ -3771,8 +3968,8 @@ button.focus-inspector__chip:disabled {
 
 .simulation-controls__direction {
   display: inline-grid;
-  width: 34px;
-  min-height: 34px;
+  width: 36px;
+  min-height: 36px;
   padding: 0;
   place-items: center;
   border-radius: 999px;
@@ -3967,6 +4164,19 @@ button.focus-inspector__chip:disabled {
   padding: 16px;
 }
 
+.event-timeline__title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.event-timeline__badge {
+  min-height: 22px;
+  padding: 4px 7px;
+  font-size: 0.64rem;
+}
+
 .event-timeline__item p {
   margin: 4px 0 0;
   color: var(--body-gray);
@@ -3984,11 +4194,26 @@ button.focus-inspector__chip:disabled {
   display: grid;
 }
 
+.pass-calendar__viewport {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0 6px;
+  scrollbar-width: thin;
+}
+
+.pass-calendar__grid {
+  display: grid;
+  min-width: 860px;
+  gap: 12px;
+}
+
 .pass-calendar__scale {
-  grid-template-columns: 140px repeat(24, minmax(44px, 1fr));
+  grid-template-columns: 168px repeat(24, minmax(44px, 1fr));
   gap: 6px;
   color: var(--body-gray);
   font-size: 0.78rem;
+  align-items: center;
 }
 
 .pass-calendar__scale span:first-child {
@@ -3997,17 +4222,26 @@ button.focus-inspector__chip:disabled {
 
 .pass-calendar__row {
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr);
+  grid-template-columns: 168px minmax(0, 1fr);
   gap: 12px;
-  align-items: center;
+  align-items: start;
 }
 
 .pass-calendar__label {
+  min-width: 0;
+  padding-top: 10px;
   color: var(--ink);
 }
 
+.pass-calendar__label strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pass-calendar__lane {
-  min-height: 54px;
+  min-height: calc((var(--lane-count, 1) * 38px) + 16px);
   border-radius: var(--radius-md);
   background:
     linear-gradient(90deg, rgba(0, 112, 204, 0.08) 1px, transparent 1px) 0 0 / calc(100% / 24) 100%,
@@ -4017,8 +4251,7 @@ button.focus-inspector__chip:disabled {
 
 .pass-calendar__block {
   position: absolute;
-  top: 8px;
-  bottom: 8px;
+  height: 30px;
   min-width: 28px;
   display: grid;
   place-items: center;
@@ -4026,6 +4259,8 @@ button.focus-inspector__chip:disabled {
   background: var(--accent);
   color: var(--surface);
   font-weight: 700;
+  box-shadow: 0 8px 18px rgba(0, 112, 204, 0.18);
+  overflow: hidden;
 }
 
 .pass-list__item {
@@ -4212,8 +4447,8 @@ button.focus-inspector__chip:disabled {
 .orbit-map__nav button,
 .orbit-map__nav span {
   display: inline-grid;
-  min-width: 30px;
-  height: 30px;
+  min-width: 36px;
+  height: 36px;
   place-items: center;
   border-radius: 999px;
 }
@@ -5287,8 +5522,8 @@ button.focus-inspector__chip:disabled {
 
   .orbit-map__nav button,
   .orbit-map__nav span {
-    min-width: 30px;
-    height: 30px;
+    min-width: 36px;
+    height: 36px;
   }
 
   .orbit-map__nav span {
@@ -5398,6 +5633,15 @@ button.focus-inspector__chip:disabled {
 
   .pass-calendar__scale {
     display: none;
+  }
+
+  .pass-calendar__grid {
+    min-width: 0;
+  }
+
+  .toolbar.toolbar--segmented {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .pass-calendar__row {
@@ -5534,7 +5778,7 @@ button.focus-inspector__chip:disabled {
   }
 
   .weather-metric-pill {
-    min-height: 104px;
+    min-height: 116px;
     padding: 12px;
   }
 
@@ -5799,8 +6043,13 @@ button.focus-inspector__chip:disabled {
     justify-content: stretch;
   }
 
+  .station-ops__scanner {
+    grid-template-columns: 1fr;
+  }
+
   .station-ops__row-controls .setting-toggle,
   .station-ops__mask,
+  .station-ops__row-controls .button,
   .station-ops__scanner .button,
   .station-ops__scanner .button--ghost {
     width: 100%;
@@ -5808,6 +6057,23 @@ button.focus-inspector__chip:disabled {
 
   .station-ops__mask {
     grid-template-columns: 1fr;
+  }
+
+  .confirm-dialog {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .confirm-dialog__panel {
+    width: 100%;
+    padding: 20px;
+    border-radius: 20px;
+  }
+
+  .confirm-dialog__actions,
+  .confirm-dialog__actions .button,
+  .confirm-dialog__actions .button--ghost {
+    width: 100%;
   }
 
   .fleets-layout {

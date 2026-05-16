@@ -132,8 +132,8 @@ function updateBottomTabsVisibility() {
         <span aria-hidden="true">{{ sidebarCollapsed ? '›' : '‹' }}</span>
       </button>
       <div class="brand">
-        <p>Orbit Lab</p>
-        <strong>CelesTrak Pro</strong>
+        <p>Unofficial orbit OSINT</p>
+        <strong>Celtrak</strong>
       </div>
       <nav class="nav-list">
         <RouterLink
@@ -162,7 +162,7 @@ function updateBottomTabsVisibility() {
         </button>
         <div class="topbar__title">
           <p class="eyebrow">{{ route.name }}</p>
-          <h1>CelesTrak Orbit Lab Pro</h1>
+          <h1>Celtrak</h1>
         </div>
         <div v-if="hasTopbarActions" class="topbar__actions">
           <button

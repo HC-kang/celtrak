@@ -22,6 +22,9 @@ export interface PassPredictionWorkerResult {
   requestId?: number;
 }
 
+const MINUTE_MS = 60_000;
+const BOUNDARY_PRECISION_MS = 1_000;
+
 export function predictPasses({ satellites, stations, hours, startTimeIso }: PassPredictionInput): PassPrediction[] {
   return limitPassPredictions(
     predictPassesForPairs({
@@ -71,8 +74,11 @@ function predictPassesForPairs({
   stepMinutes?: number;
 }): PassPrediction[] {
   const results: PassPrediction[] = [];
-  const start = startTimeIso ? new Date(startTimeIso) : new Date();
-  const end = new Date(start.getTime() + hours * 60 * 60 * 1000);
+  const requestedStartMs = startTimeIso ? new Date(startTimeIso).getTime() : Date.now();
+  const startMs = Math.floor(requestedStartMs / MINUTE_MS) * MINUTE_MS;
+  const endMs = requestedStartMs + hours * 60 * 60 * 1000;
+  const stepMs = stepMinutes * MINUTE_MS;
+  const computedAt = new Date().toISOString();
 
   for (const sat of satellites) {
     const satrec = satellite.twoline2satrec(sat.tle.line1, sat.tle.line2);
@@ -82,25 +88,43 @@ function predictPassesForPairs({
         latitude: satellite.degreesToRadians(station.latDeg),
         height: station.altitudeM / 1000,
       };
-      let currentTime = new Date(start);
+      let currentMs = startMs;
       let inPass = false;
       let passStart: ReturnType<typeof createLookSnapshot> | null = null;
       let peak: ReturnType<typeof createLookSnapshot> | null = null;
       let lastVisible: ReturnType<typeof createLookSnapshot> | null = null;
+      let lastSnapshot: ReturnType<typeof createLookSnapshot> | null = null;
 
-      while (currentTime <= end) {
-        const snapshot = createLookSnapshot(satrec, observerGd, currentTime);
+      while (currentMs <= endMs) {
+        const snapshot = createLookSnapshot(satrec, observerGd, new Date(currentMs));
         if (snapshot && snapshot.elevationDeg >= station.elevationMaskDeg) {
           if (!inPass) {
             inPass = true;
-            passStart = snapshot;
+            passStart = refinePassBoundary({
+              satrec,
+              observerGd,
+              station,
+              lowerMs: lastSnapshot?.timestamp.getTime() ?? requestedStartMs,
+              upperMs: currentMs,
+              targetVisible: true,
+            });
             peak = snapshot;
           } else if ((peak?.elevationDeg ?? 0) < snapshot.elevationDeg) {
             peak = snapshot;
           }
           lastVisible = snapshot;
         } else if (inPass && passStart && peak) {
-          const passEnd = lastVisible ?? peak;
+          const passEnd =
+            lastVisible && snapshot
+              ? refinePassBoundary({
+                  satrec,
+                  observerGd,
+                  station,
+                  lowerMs: lastVisible.timestamp.getTime(),
+                  upperMs: currentMs,
+                  targetVisible: false,
+                })
+              : lastVisible ?? peak;
           results.push({
             origin: 'DERIVED',
             satelliteRef: sat.satelliteRef,
@@ -113,7 +137,7 @@ function predictPassesForPairs({
             aosAzimuthDeg: passStart.azimuthDeg,
             losAzimuthDeg: passEnd.azimuthDeg,
             illuminationAtTca: 'SUNLIT',
-            computedAt: new Date().toISOString(),
+            computedAt,
           });
           inPass = false;
           passStart = null;
@@ -121,11 +145,12 @@ function predictPassesForPairs({
           lastVisible = null;
         }
 
-        currentTime = new Date(currentTime.getTime() + stepMinutes * 60 * 1000);
+        lastSnapshot = snapshot;
+        currentMs += stepMs;
       }
 
       if (inPass && passStart && peak) {
-        const passEnd = lastVisible ?? peak;
+        const passEnd = createLookSnapshot(satrec, observerGd, new Date(endMs)) ?? lastVisible ?? peak;
         results.push({
           origin: 'DERIVED',
           satelliteRef: sat.satelliteRef,
@@ -139,7 +164,7 @@ function predictPassesForPairs({
           aosAzimuthDeg: passStart.azimuthDeg,
           losAzimuthDeg: passEnd.azimuthDeg,
           illuminationAtTca: 'SUNLIT',
-          computedAt: new Date().toISOString(),
+          computedAt,
         });
       }
     }
@@ -201,6 +226,47 @@ function createLookSnapshot(
     azimuthDeg: radiansToDegrees(look.azimuth),
     elevationDeg: radiansToDegrees(look.elevation),
   };
+}
+
+function refinePassBoundary({
+  satrec,
+  observerGd,
+  station,
+  lowerMs,
+  upperMs,
+  targetVisible,
+}: {
+  satrec: satellite.SatRec;
+  observerGd: { longitude: number; latitude: number; height: number };
+  station: GroundStation;
+  lowerMs: number;
+  upperMs: number;
+  targetVisible: boolean;
+}) {
+  let low = Math.min(lowerMs, upperMs);
+  let high = Math.max(lowerMs, upperMs);
+  while (high - low > BOUNDARY_PRECISION_MS) {
+    const midpoint = Math.floor((low + high) / 2);
+    const visible = isVisible(satrec, observerGd, station, midpoint);
+    if (visible === null) break;
+    if (visible === targetVisible) {
+      high = midpoint;
+    } else {
+      low = midpoint;
+    }
+  }
+  return createLookSnapshot(satrec, observerGd, new Date(high)) ?? createLookSnapshot(satrec, observerGd, new Date(upperMs))!;
+}
+
+function isVisible(
+  satrec: satellite.SatRec,
+  observerGd: { longitude: number; latitude: number; height: number },
+  station: GroundStation,
+  timestampMs: number,
+) {
+  const snapshot = createLookSnapshot(satrec, observerGd, new Date(timestampMs));
+  if (!snapshot) return null;
+  return snapshot.elevationDeg >= station.elevationMaskDeg;
 }
 
 function radiansToDegrees(value: number) {

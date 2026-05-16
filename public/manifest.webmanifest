@@ -1,6 +1,6 @@
 {
-  "name": "CelesTrak Orbit Lab Pro",
-  "short_name": "Orbit Lab",
+  "name": "Celtrak",
+  "short_name": "Celtrak",
   "start_url": "/?source=pwa",
   "display": "standalone",
   "orientation": "any",

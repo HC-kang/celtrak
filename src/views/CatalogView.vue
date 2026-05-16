@@ -48,6 +48,7 @@ const visibleEntries = computed(() => filtered.value.slice(0, visibleLimit.value
 const hasMore = computed(() => visibleEntries.value.length < filtered.value.length);
 const selectedFleetName = computed(() => store.selectedFleet?.name ?? 'No fleet selected');
 const catalogLoading = computed(() => store.catalogIndexLoading && !store.catalogIndexLoaded);
+const trackedCatalogNumbers = computed(() => new Set(store.selectedFleetCatalogNumbers));
 
 onMounted(() => {
   void store.loadCatalogIndex();
@@ -76,7 +77,7 @@ function uniqueSorted(values: string[]) {
 }
 
 function isTracked(entry: { satcat: { catalogNumber: number } }) {
-  return store.selectedFleetCatalogNumbers.includes(entry.satcat.catalogNumber);
+  return trackedCatalogNumbers.value.has(entry.satcat.catalogNumber);
 }
 
 async function toggleTracking(entry: CatalogEntry) {
@@ -120,7 +121,7 @@ async function toggleTracking(entry: CatalogEntry) {
         </select>
       </div>
       <p v-if="catalogLoading" class="supporting-text">
-        서버 캐시에서 CelesTrak active catalog를 불러오는 중입니다. 첫 캐시 생성 시에는 몇 초 정도 걸릴 수 있습니다.
+        서버 캐시에서 public active catalog를 불러오는 중입니다. 첫 캐시 생성 시에는 몇 초 정도 걸릴 수 있습니다.
       </p>
       <p v-else class="supporting-text">
         {{ formatNumber(store.catalog.length) }} indexed · {{ formatNumber(filtered.length) }} matched ·

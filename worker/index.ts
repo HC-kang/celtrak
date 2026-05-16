@@ -129,7 +129,7 @@ const MAX_CONJUNCTION_LIMIT = 2_000;
 const MAX_SOCRATES_SEARCH_RESULTS = 1_000;
 const MAX_SOCRATES_CATALOG_SEARCH_RESULTS = 100;
 const DEFAULT_API_CACHE_TTL_SECONDS = 900;
-// CelesTrak GP/SATCAT does not provide usable expiry headers and asks clients not to refetch more than once per 2 hours.
+// Public GP/SATCAT does not provide usable expiry headers and asks clients not to refetch more than once per 2 hours.
 const DEFAULT_CATALOG_CACHE_TTL_SECONDS = 9_000;
 const CATALOG_ORIGIN_REFRESH_SECONDS = 7_200;
 const CATALOG_SNAPSHOT_SCOPE = 'public-index';
@@ -195,7 +195,7 @@ class CatalogLookupMissError extends Error {
   }
 }
 
-interface CelestrakSatcatRecord {
+interface PublicSatcatRecord {
   OBJECT_NAME?: string;
   OBJECT_ID?: string;
   NORAD_CAT_ID?: number | string;
@@ -271,7 +271,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
 
 async function buildApiResponse(url: URL, env: Env) {
   if (url.pathname === '/api/health') {
-    return json({ ok: true, service: 'celestrak-orbit-lab-pro', timestamp: new Date().toISOString() });
+    return json({ ok: true, service: 'celtrak', timestamp: new Date().toISOString() });
   }
   if (url.pathname === '/api/celestrak/catalog' || url.pathname === '/api/celestrak/gp') {
     return json(await getCatalog(url, env));
@@ -491,14 +491,14 @@ async function getCatalog(url: URL, env: Env): Promise<CatalogEntry[]> {
         : dedupeCatalog(snapshot);
       return entries.slice(0, limit);
     }
-    throw new Error('CelesTrak catalog snapshot unavailable; waiting for scheduled ingest');
+    throw new Error('Public catalog snapshot unavailable; waiting for scheduled ingest');
   }
 
   const groups = requestedGroup ? CELESTRAK_GROUPS.filter((group) => group.key === requestedGroup || group.label.toLowerCase() === requestedGroup) : CELESTRAK_GROUPS;
   const selectedGroups = groups.length ? groups : CELESTRAK_GROUPS;
   const fetchedAt = new Date().toISOString();
   const shouldEnrichSatcat = selectedGroups.some((group) => group.key === 'active');
-  const satcatByCatalog = shouldEnrichSatcat ? await fetchSatcatRecords('active').catch(() => new Map<number, CelestrakSatcatRecord>()) : new Map<number, CelestrakSatcatRecord>();
+  const satcatByCatalog = shouldEnrichSatcat ? await fetchSatcatRecords('active').catch(() => new Map<number, PublicSatcatRecord>()) : new Map<number, PublicSatcatRecord>();
   const settled = await Promise.allSettled(
     selectedGroups.map((group) => fetchTleGroup(group.key).then((tle) => parseTleCatalog(tle, group.label, fetchedAt, satcatByCatalog))),
   );
@@ -508,7 +508,7 @@ async function getCatalog(url: URL, env: Env): Promise<CatalogEntry[]> {
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
       .map((result) => (result.reason instanceof Error ? result.reason.message : 'unknown'))
       .join('; ');
-    throw new Error(`CelesTrak catalog unavailable${failures ? `: ${failures}` : ''}`);
+    throw new Error(`Public catalog unavailable${failures ? `: ${failures}` : ''}`);
   }
   return dedupeCatalog(entries).slice(0, limit);
 }
@@ -521,7 +521,7 @@ async function getCatalogByCatalogNumbers(catalogNumbers: number[], env: Env): P
   });
   if (snapshot) return filterCatalogEntriesByCatalogNumbers(snapshot, wanted);
 
-  throw new Error('CelesTrak catalog snapshot unavailable; waiting for scheduled ingest');
+  throw new Error('Public catalog snapshot unavailable; waiting for scheduled ingest');
 }
 
 function filterCatalogEntriesByCatalogNumbers(entries: CatalogEntry[], catalogNumbers: Set<number>) {
@@ -533,8 +533,8 @@ async function refreshCatalogSnapshot(env: Env) {
   if (!bucket) return false;
 
   const previousManifest = await getCatalogSnapshotManifest(bucket).catch(() => null);
-  const entries = await getSnapshotCatalogEntriesFromCelesTrak();
-  if (!entries.length) throw new Error('CelesTrak catalog snapshot produced no entries');
+  const entries = await getSnapshotCatalogEntriesFromPublicFeeds();
+  if (!entries.length) throw new Error('Public catalog snapshot produced no entries');
 
   const snapshotId = new Date().toISOString().replace(/[^0-9A-Za-z]/g, '');
   const completedAt = new Date().toISOString();
@@ -646,9 +646,9 @@ function catalogSnapshotManifestKey() {
   return `catalog/${CATALOG_SNAPSHOT_SCOPE}/latest.json`;
 }
 
-async function getSnapshotCatalogEntriesFromCelesTrak() {
+async function getSnapshotCatalogEntriesFromPublicFeeds() {
   const fetchedAt = new Date().toISOString();
-  const satcatByCatalog = new Map<number, CelestrakSatcatRecord>();
+  const satcatByCatalog = new Map<number, PublicSatcatRecord>();
   const settled = await Promise.allSettled(
     CELESTRAK_GROUPS.map((group) =>
       fetchTleGroup(group.key).then((tle) => parseTleCatalog(tle, group.label, fetchedAt, satcatByCatalog)),
@@ -657,7 +657,7 @@ async function getSnapshotCatalogEntriesFromCelesTrak() {
   const tleEntries = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
   for (const result of settled) {
     if (result.status === 'rejected') {
-      console.warn('CelesTrak GP snapshot fetch failed', result.reason);
+      console.warn('Public GP snapshot fetch failed', result.reason);
     }
   }
 
@@ -696,7 +696,7 @@ function settlePromise<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>>
   );
 }
 
-function catalogEntryFromSatcat(record: CelestrakSatcatRecord, fetchedAt: string, group = 'SATCAT'): CatalogEntry | null {
+function catalogEntryFromSatcat(record: PublicSatcatRecord, fetchedAt: string, group = 'SATCAT'): CatalogEntry | null {
   const catalogNumber = Number(record.NORAD_CAT_ID);
   if (!Number.isFinite(catalogNumber)) return null;
   return {
@@ -721,22 +721,22 @@ function catalogEntryFromSatcat(record: CelestrakSatcatRecord, fetchedAt: string
 }
 
 async function fetchTleGroup(group: string) {
-  const { text } = await fetchCelestrakText(`/NORAD/elements/gp.php?GROUP=${encodeURIComponent(group)}&FORMAT=tle`, TLE_FETCH_TIMEOUT_MS);
+  const { text } = await fetchPublicOrbitText(`/NORAD/elements/gp.php?GROUP=${encodeURIComponent(group)}&FORMAT=tle`, TLE_FETCH_TIMEOUT_MS);
   return text;
 }
 
 async function fetchTleByCatalogNumber(catalogNumber: number, timeoutMs = TLE_FETCH_TIMEOUT_MS) {
-  const { text } = await fetchCelestrakText(`/NORAD/elements/gp.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=tle`, timeoutMs);
+  const { text } = await fetchPublicOrbitText(`/NORAD/elements/gp.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=tle`, timeoutMs);
   if (!text.trim() || /No GP data found/i.test(text)) {
-    throw new CatalogLookupMissError(`CelesTrak CATNR=${catalogNumber} no TLE rows`);
+    throw new CatalogLookupMissError(`Public catalog CATNR=${catalogNumber} no TLE rows`);
   }
   return text;
 }
 
 async function fetchSatcatRecords(group: string) {
-  const { text, url } = await fetchCelestrakText(`/satcat/records.php?GROUP=${encodeURIComponent(group)}&FORMAT=JSON`, SATCAT_FETCH_TIMEOUT_MS);
-  const rows = parseJsonResponse<CelestrakSatcatRecord[]>(url, text);
-  const records = new Map<number, CelestrakSatcatRecord>();
+  const { text, url } = await fetchPublicOrbitText(`/satcat/records.php?GROUP=${encodeURIComponent(group)}&FORMAT=JSON`, SATCAT_FETCH_TIMEOUT_MS);
+  const rows = parseJsonResponse<PublicSatcatRecord[]>(url, text);
+  const records = new Map<number, PublicSatcatRecord>();
   for (const row of rows) {
     const catalogNumber = Number(row.NORAD_CAT_ID);
     if (Number.isFinite(catalogNumber)) {
@@ -747,17 +747,17 @@ async function fetchSatcatRecords(group: string) {
 }
 
 async function fetchSatcatRecord(catalogNumber: number, timeoutMs = SATCAT_FETCH_TIMEOUT_MS) {
-  const { text, url } = await fetchCelestrakText(`/satcat/records.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=JSON`, timeoutMs);
+  const { text, url } = await fetchPublicOrbitText(`/satcat/records.php?CATNR=${encodeURIComponent(catalogNumber)}&FORMAT=JSON`, timeoutMs);
   if (!text.trim() || /No SATCAT records found/i.test(text)) {
-    throw new CatalogLookupMissError(`CelesTrak SATCAT CATNR=${catalogNumber} empty`);
+    throw new CatalogLookupMissError(`Public SATCAT CATNR=${catalogNumber} empty`);
   }
-  const rows = parseJsonResponse<CelestrakSatcatRecord[]>(url, text);
+  const rows = parseJsonResponse<PublicSatcatRecord[]>(url, text);
   const record = rows[0];
-  if (!record) throw new CatalogLookupMissError(`CelesTrak SATCAT CATNR=${catalogNumber} empty`);
+  if (!record) throw new CatalogLookupMissError(`Public SATCAT CATNR=${catalogNumber} empty`);
   return record;
 }
 
-function parseTleCatalog(text: string, group: string, fetchedAt: string, satcatByCatalog = new Map<number, CelestrakSatcatRecord>()): CatalogEntry[] {
+function parseTleCatalog(text: string, group: string, fetchedAt: string, satcatByCatalog = new Map<number, PublicSatcatRecord>()): CatalogEntry[] {
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -965,7 +965,7 @@ async function refreshSocratesSnapshot(env: Env, order: string) {
 
   for (let chunkIndex = 0; chunkIndex < SOCRATES_SNAPSHOT_MAX_CHUNKS; chunkIndex += 1) {
     const end = nextStart + SOCRATES_SNAPSHOT_CHUNK_BYTES - 1;
-    const { response, arrayBuffer, url } = await fetchCelestrakBytes(socratesCsvPath(order), SOCRATES_SNAPSHOT_CHUNK_TIMEOUT_MS, {
+    const { response, arrayBuffer, url } = await fetchPublicOrbitBytes(socratesCsvPath(order), SOCRATES_SNAPSHOT_CHUNK_TIMEOUT_MS, {
       range: `bytes=${nextStart}-${end}`,
     });
     if (!response.ok) throw new Error(`${url} ${response.status}`);
@@ -1146,7 +1146,7 @@ async function getSocratesSearchResults(order: string, limit: number, catalogNum
     ? Math.min(limit, MAX_SOCRATES_CATALOG_SEARCH_RESULTS)
     : Math.min(limit, MAX_SOCRATES_SEARCH_RESULTS);
   if (!catalogNumbers.length) {
-    const { text } = await fetchCelestrakText(socratesSearchPath(order, max));
+    const { text } = await fetchPublicOrbitText(socratesSearchPath(order, max));
     return parseSocratesHtml(text, {
       fetchedAt: socratesFetchedAtFromHtml(text) ?? new Date().toISOString(),
       limit,
@@ -1156,7 +1156,7 @@ async function getSocratesSearchResults(order: string, limit: number, catalogNum
 
   const settled = await Promise.allSettled(
     catalogNumbers.map(async (catalogNumber) => {
-      const { text } = await fetchCelestrakText(socratesSearchPath(order, max, catalogNumber));
+      const { text } = await fetchPublicOrbitText(socratesSearchPath(order, max, catalogNumber));
       return parseSocratesHtml(text, {
         fetchedAt: socratesFetchedAtFromHtml(text) ?? new Date().toISOString(),
         limit: max,
@@ -1298,7 +1298,7 @@ async function fetchSocratesCsv(order: string, limit: number, hasCatalogFilter: 
     return fetchSocratesCsvFullScan(order);
   }
   const rangeBytes = Math.max(SOCRATES_RANGE_BYTES, limit * 512);
-  return fetchCelestrakText(socratesCsvPath(order), SOCRATES_FETCH_TIMEOUT_MS, {
+  return fetchPublicOrbitText(socratesCsvPath(order), SOCRATES_FETCH_TIMEOUT_MS, {
     range: `bytes=0-${rangeBytes - 1}`,
   });
 }
@@ -1310,7 +1310,7 @@ async function fetchSocratesCsvFullScan(order: string) {
 
   for (let chunkIndex = 0; chunkIndex < 64; chunkIndex += 1) {
     const end = nextStart + SOCRATES_FILTERED_RANGE_BYTES - 1;
-    const { response, text } = await fetchCelestrakText(socratesCsvPath(order), SOCRATES_FETCH_TIMEOUT_MS, {
+    const { response, text } = await fetchPublicOrbitText(socratesCsvPath(order), SOCRATES_FETCH_TIMEOUT_MS, {
       range: `bytes=${nextStart}-${end}`,
     });
     const lastModified = response.headers.get('last-modified');
@@ -1957,7 +1957,7 @@ async function fetchJson<T>(url: string, timeoutMs = 8000): Promise<T> {
   return parseJsonResponse<T>(url, text);
 }
 
-async function fetchCelestrakText(path: string, timeoutMs = 12_000, headers: Record<string, string> = {}) {
+async function fetchPublicOrbitText(path: string, timeoutMs = 12_000, headers: Record<string, string> = {}) {
   const errors: string[] = [];
   for (const origin of CELESTRAK_ORIGINS) {
     const url = `${origin}${path}`;
@@ -1974,7 +1974,7 @@ async function fetchCelestrakText(path: string, timeoutMs = 12_000, headers: Rec
   throw new Error(errors.join('; '));
 }
 
-async function fetchCelestrakBytes(path: string, timeoutMs = 12_000, headers: Record<string, string> = {}) {
+async function fetchPublicOrbitBytes(path: string, timeoutMs = 12_000, headers: Record<string, string> = {}) {
   const errors: string[] = [];
   for (const origin of CELESTRAK_ORIGINS) {
     const url = `${origin}${path}`;

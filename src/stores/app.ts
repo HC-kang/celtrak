@@ -37,6 +37,7 @@ const LEGACY_CATALOG_REWRITES = [
     toDisplayName: 'NOAA 19',
   },
 ] as const;
+const DEFAULT_GROUND_STATION_IDS = new Set(defaultGroundStations.map((station) => station.id));
 
 export const useAppStore = defineStore('app', () => {
   const catalog = ref<CatalogEntry[]>([]);
@@ -323,7 +324,7 @@ export const useAppStore = defineStore('app', () => {
       return addCatalogToFleet(existing, fleetId);
     }
     const [entry] = await gateway.getCatalogStrict({ catalogNumbers: [catalogNumber] }, { timeoutMs: 15_000 });
-    if (!entry) throw new Error(`CelesTrak에서 NORAD ${catalogNumber}의 TLE/SATCAT을 찾지 못했습니다.`);
+    if (!entry) throw new Error(`Public catalog snapshot에서 NORAD ${catalogNumber}의 TLE/SATCAT을 찾지 못했습니다.`);
     return addCatalogToFleet(entry, fleetId);
   }
 
@@ -394,6 +395,24 @@ export const useAppStore = defineStore('app', () => {
     const station = groundStations.value.find((item) => item.id === id);
     if (!station) return;
     await upsertGroundStation({ ...station, enabled });
+  }
+
+  function canDeleteGroundStation(station: GroundStation) {
+    return station.elevationMaskSource?.confidence === 'user' && !DEFAULT_GROUND_STATION_IDS.has(station.id);
+  }
+
+  async function deleteGroundStation(id: string) {
+    const station = groundStations.value.find((item) => item.id === id);
+    if (!station || !canDeleteGroundStation(station)) return false;
+
+    await fleetStore.deleteGroundStation(id);
+    groundStations.value = await fleetStore.listGroundStations();
+
+    if (preferences.value.defaultGroundStationId === id) {
+      updatePreferences({ defaultGroundStationId: groundStations.value[0]?.id });
+    }
+
+    return true;
   }
 
   function setDefaultGroundStation(id: string) {
@@ -583,6 +602,7 @@ export const useAppStore = defineStore('app', () => {
     anomalies,
     applyUpdate,
     bootstrap,
+    canDeleteGroundStation,
     catalog,
     catalogIndexLoaded,
     catalogIndexLoading,
@@ -593,6 +613,7 @@ export const useAppStore = defineStore('app', () => {
     defaultGroundStation,
     deleteEvent,
     deleteFleet,
+    deleteGroundStation,
     events,
     exportWorkspace,
     fetchConjunctions,
@@ -789,7 +810,7 @@ function createSeedEvents(): ScheduledEvent[] {
       endAt: new Date(base + 7 * 60 * 60 * 1000).toISOString(),
       kind: 'MAINTENANCE',
       title: 'Crew comm window',
-      notes: 'High priority voice and telemetry pass planning.',
+      notes: 'Sample schedule item for voice and telemetry pass planning.',
       schemaVersion: 1,
     },
     {
@@ -799,7 +820,7 @@ function createSeedEvents(): ScheduledEvent[] {
       endAt: new Date(base + 18 * 60 * 60 * 1000).toISOString(),
       kind: 'SW_UPDATE',
       title: 'Payload timing parameter review',
-      notes: 'User-defined maintenance timeline.',
+      notes: 'Sample user-defined maintenance timeline.',
       schemaVersion: 1,
     },
   ];

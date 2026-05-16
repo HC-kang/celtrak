@@ -195,6 +195,17 @@ export class IndexedDBFleetStore implements FleetStore {
     );
   }
 
+  async deleteGroundStation(id: string) {
+    await this.run(
+      'deleteGroundStation',
+      async () => {
+        const db = await this.dbPromise;
+        await db.delete('groundStations', id);
+      },
+      () => this.fallback.deleteGroundStation(id),
+    );
+  }
+
   async listEvents(from: string, to: string) {
     return this.run(
       'listEvents',
