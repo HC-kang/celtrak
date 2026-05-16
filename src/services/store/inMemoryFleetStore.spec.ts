@@ -68,4 +68,25 @@ describe('InMemoryFleetStore', () => {
     events = await store.listEvents('2026-04-23T00:00:00.000Z', '2026-04-24T00:00:00.000Z');
     expect(events).toHaveLength(0);
   });
+
+  it('deletes ground stations from the workspace', async () => {
+    const store = new InMemoryFleetStore();
+
+    await store.upsertGroundStation({
+      id: 'station-user-seoul',
+      name: 'User Seoul',
+      latDeg: 37.5665,
+      lonDeg: 126.978,
+      altitudeM: 38,
+      elevationMaskDeg: 10,
+      enabled: true,
+      schemaVersion: 1,
+    });
+
+    expect(await store.listGroundStations()).toHaveLength(1);
+
+    await store.deleteGroundStation('station-user-seoul');
+
+    expect(await store.listGroundStations()).toHaveLength(0);
+  });
 });

@@ -24,6 +24,7 @@ export interface FleetStore {
   upsertAnomaly(anomaly: AnomalyEntry): Promise<void>;
   listGroundStations(): Promise<GroundStation[]>;
   upsertGroundStation(station: GroundStation): Promise<void>;
+  deleteGroundStation(id: string): Promise<void>;
   listEvents(from: string, to: string): Promise<ScheduledEvent[]>;
   upsertEvent(event: ScheduledEvent): Promise<void>;
   deleteEvent(id: string): Promise<void>;

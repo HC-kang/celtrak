@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue';
 import { RouterLink } from 'vue-router';
+import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import PanelCard from '@/components/PanelCard.vue';
 import OriginBadge from '@/components/OriginBadge.vue';
 import { useAppStore } from '@/stores/app';
+import type { UserFleet } from '@/domain/types';
 
 const store = useAppStore();
 
@@ -22,6 +24,7 @@ const anomalyForm = reactive({
   description: '',
 });
 const importMessage = ref('');
+const fleetPendingDelete = ref<UserFleet | null>(null);
 const memberDrafts = reactive<Record<string, { displayName: string; tags: string }>>({});
 
 const fleetMembers = computed(() =>
@@ -64,6 +67,25 @@ async function submitFleet() {
   await store.createFleet(fleetForm.name.trim(), fleetForm.description.trim());
   fleetForm.name = '';
   fleetForm.description = '';
+}
+
+async function confirmDeleteSelectedFleet() {
+  const fleet = store.selectedFleet;
+  if (!fleet) return;
+  fleetPendingDelete.value = fleet;
+}
+
+async function deletePendingFleet() {
+  const fleet = fleetPendingDelete.value;
+  fleetPendingDelete.value = null;
+  if (!fleet) return;
+  await store.deleteFleet(fleet.id);
+}
+
+function setFleetDeleteDialogOpen(value: boolean) {
+  if (!value) {
+    fleetPendingDelete.value = null;
+  }
 }
 
 async function submitImport() {
@@ -163,9 +185,21 @@ function refKey(member: { refType: 'catalog' | 'custom'; catalogNumber?: number;
         <input v-model="fleetForm.name" class="input" type="text" placeholder="새 플릿 이름" />
         <input v-model="fleetForm.description" class="input" type="text" placeholder="설명" />
         <button class="button" @click="submitFleet()">플릿 생성</button>
-        <button v-if="store.selectedFleet" class="button button--ghost" @click="store.deleteFleet(store.selectedFleet.id)">선택 플릿 삭제</button>
+        <button v-if="store.selectedFleet" class="button button--danger" @click="confirmDeleteSelectedFleet()">선택 플릿 삭제</button>
       </div>
     </PanelCard>
+
+    <ConfirmDialog
+      :model-value="Boolean(fleetPendingDelete)"
+      title="선택 플릿 삭제"
+      :message="`${fleetPendingDelete?.name ?? '이 플릿'}을 삭제할까요?`"
+      detail="멤버 구성과 플릿 설정이 이 워크스페이스에서 제거됩니다. Catalog 원천 데이터와 사용자 TLE import 항목은 삭제되지 않습니다."
+      confirm-label="삭제"
+      cancel-label="취소"
+      tone="danger"
+      @update:model-value="setFleetDeleteDialogOpen"
+      @confirm="deletePendingFleet()"
+    />
 
     <PanelCard class="fleet-status-panel" title="Operational Status Log" subtitle="USER readiness entry">
       <div class="form-grid fleet-status-form">

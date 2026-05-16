@@ -87,6 +87,10 @@ export class InMemoryFleetStore implements FleetStore {
     this.groundStations.set(station.id, station);
   }
 
+  async deleteGroundStation(id: string) {
+    this.groundStations.delete(id);
+  }
+
   async listEvents(from: string, to: string) {
     return [...this.events.values()].filter((event) => event.startAt >= from && event.startAt <= to);
   }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
+import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import PanelCard from '@/components/PanelCard.vue';
 import OriginBadge from '@/components/OriginBadge.vue';
 import PassList from '@/components/PassList.vue';
@@ -32,6 +33,7 @@ const visibleComputedAt = ref('');
 const importJson = ref('');
 const exportResult = ref('');
 const importMessage = ref('');
+const stationPendingDelete = ref<GroundStation | null>(null);
 const fleetOnlyConjunctions = ref(true);
 const eventView = ref<'list' | 'calendar'>(
   viewport.breakpoint.value === 'xs' || viewport.breakpoint.value === 'sm' ? 'list' : 'calendar',
@@ -59,6 +61,8 @@ const eventForm = reactive({
 const selectedStation = computed(() => store.groundStations.find((station) => station.id === selectedStationId.value) ?? null);
 const enabledStationCount = computed(() => store.groundStations.filter((station) => station.enabled).length);
 const visibleCatalogCount = computed(() => store.catalog.filter((entry) => entry.tle).length);
+const currentStationIds = computed(() => new Set(store.groundStations.map((station) => station.id)));
+const visiblePassPredictions = computed(() => store.passPredictions.filter((pass) => currentStationIds.value.has(pass.groundStationId)));
 const trackedCatalogNumbers = computed(
   () =>
     new Set(
@@ -142,6 +146,24 @@ function setAllGroundStations(enabled: boolean) {
 function updateStationMask(station: GroundStation, value: string) {
   const elevationMaskDeg = clampElevation(Number(value));
   void store.upsertGroundStation(withUserElevationMaskSource({ ...station, elevationMaskDeg }));
+}
+
+async function confirmDeleteGroundStation(station: GroundStation) {
+  if (!store.canDeleteGroundStation(station)) return;
+  stationPendingDelete.value = station;
+}
+
+async function deletePendingGroundStation() {
+  const station = stationPendingDelete.value;
+  stationPendingDelete.value = null;
+  if (!station) return;
+  await store.deleteGroundStation(station.id);
+}
+
+function setStationDeleteDialogOpen(value: boolean) {
+  if (!value) {
+    stationPendingDelete.value = null;
+  }
 }
 
 async function scanVisibleSatellites() {
@@ -346,10 +368,31 @@ function clampElevation(value: number) {
                 @change="updateStationMask(station, ($event.target as HTMLInputElement).value)"
               />
             </label>
+            <button
+              v-if="store.canDeleteGroundStation(station)"
+              class="button button--danger"
+              type="button"
+              title="사용자 추가 지상국 삭제"
+              @click="confirmDeleteGroundStation(station)"
+            >
+              삭제
+            </button>
           </div>
         </article>
       </div>
     </PanelCard>
+
+    <ConfirmDialog
+      :model-value="Boolean(stationPendingDelete)"
+      title="지상국 삭제"
+      :message="`${stationPendingDelete?.name ?? '이 지상국'}을 삭제할까요?`"
+      detail="사용자가 추가한 지상국만 삭제됩니다. 기본 public station은 삭제 대신 비활성화로 관리합니다."
+      confirm-label="삭제"
+      cancel-label="취소"
+      tone="danger"
+      @update:model-value="setStationDeleteDialogOpen"
+      @confirm="deletePendingGroundStation()"
+    />
 
     <PanelCard title="Visible Satellites" subtitle="Current station look-angle scan">
       <template #actions>
@@ -370,7 +413,7 @@ function clampElevation(value: number) {
         </button>
         <RouterLink class="button button--ghost" to="/briefing">Briefing 보기</RouterLink>
       </div>
-      <p class="supporting-text">
+      <p class="supporting-text station-ops__scanner-copy">
         현재 시간 {{ formatTimestamp(new Date().toISOString()) }} 기준으로 catalog TLE 전체를 훑고,
         선택 지상국의 elevation mask 이상인 위성을 elevation 높은 순으로 보여줍니다.
       </p>
@@ -461,7 +504,7 @@ function clampElevation(value: number) {
     </PanelCard>
 
     <PanelCard title="Pass Visibility Calendar" subtitle="Derived contact schedule">
-      <div class="toolbar">
+      <div class="toolbar toolbar--segmented">
         <button
           class="button button--ghost"
           :class="{ 'button--selected': eventView === 'list' }"
@@ -481,10 +524,10 @@ function clampElevation(value: number) {
           캘린더
         </button>
       </div>
-      <PassList v-if="eventView === 'list'" :passes="store.passPredictions" :station-lookup="stationLookup" />
+      <PassList v-if="eventView === 'list'" :passes="visiblePassPredictions" :station-lookup="stationLookup" />
       <PassCalendar
         v-else
-        :passes="store.passPredictions"
+        :passes="visiblePassPredictions"
         :station-lookup="stationLookup"
         :start-time-iso="store.simulationTimeIso"
       />

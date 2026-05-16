@@ -37,6 +37,7 @@ const LEGACY_CATALOG_REWRITES = [
     toDisplayName: 'NOAA 19',
   },
 ] as const;
+const DEFAULT_GROUND_STATION_IDS = new Set(defaultGroundStations.map((station) => station.id));
 
 export const useAppStore = defineStore('app', () => {
   const catalog = ref<CatalogEntry[]>([]);
@@ -396,6 +397,24 @@ export const useAppStore = defineStore('app', () => {
     await upsertGroundStation({ ...station, enabled });
   }
 
+  function canDeleteGroundStation(station: GroundStation) {
+    return station.elevationMaskSource?.confidence === 'user' && !DEFAULT_GROUND_STATION_IDS.has(station.id);
+  }
+
+  async function deleteGroundStation(id: string) {
+    const station = groundStations.value.find((item) => item.id === id);
+    if (!station || !canDeleteGroundStation(station)) return false;
+
+    await fleetStore.deleteGroundStation(id);
+    groundStations.value = await fleetStore.listGroundStations();
+
+    if (preferences.value.defaultGroundStationId === id) {
+      updatePreferences({ defaultGroundStationId: groundStations.value[0]?.id });
+    }
+
+    return true;
+  }
+
   function setDefaultGroundStation(id: string) {
     updatePreferences({ defaultGroundStationId: id });
   }
@@ -583,6 +602,7 @@ export const useAppStore = defineStore('app', () => {
     anomalies,
     applyUpdate,
     bootstrap,
+    canDeleteGroundStation,
     catalog,
     catalogIndexLoaded,
     catalogIndexLoading,
@@ -593,6 +613,7 @@ export const useAppStore = defineStore('app', () => {
     defaultGroundStation,
     deleteEvent,
     deleteFleet,
+    deleteGroundStation,
     events,
     exportWorkspace,
     fetchConjunctions,
